@@ -124,6 +124,19 @@ export class LiveAgentClient {
     }
   }
 
+  public stopAudioOutput() {
+    try {
+      if (this.audioCtxOutput) {
+        this.audioCtxOutput.suspend();
+        this.audioCtxOutput.close().catch(() => {});
+        this.audioCtxOutput = null;
+      }
+    } catch (err) {
+      console.warn('[LiveAgentClient] Error stopping audio output:', err);
+    }
+    this.nextPlaybackStartTime = 0;
+  }
+
   public sendConfirmedText(text: string) {
     this.prepareAudioOutput();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {

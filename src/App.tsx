@@ -130,7 +130,7 @@ export default function App() {
     setOrders((prev) =>
       prev.map((o) => {
         if (o.id === id) {
-          const updated = { ...o, status: 'calling' as const, priority: 'Cần gọi' };
+          const updated = { ...o, status: 'da_huy' as const, priority: 'Cần gọi' };
           return updated;
         }
         return o;
@@ -144,41 +144,18 @@ export default function App() {
   };
 
   const handleCustomerSendOrder = async (cartItems: CartItem[], transcript: string) => {
-    const newId = `#MD-${Math.floor(8825 + Math.random() * 1000)}`;
-    const newOrder: Order = {
-      id: newId,
-      timestamp: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
-      patientName: 'Khách hàng',
-      patientAge: 0,
-      patientPhone: '',
-      priority: 'Tiêu chuẩn',
-      status: 'pending',
-      voiceTranscript: transcript,
-      clinicalSummary: {
-        gender: 'Nam',
-        age: 0,
-        medicalHistory: [],
-        symptoms: 'Đặt hàng mới qua Voice Shopping App: ' + transcript,
-        aiTriage: {
-          category: 'Voice Shopping Order (Live)',
-          riskLevel: 'Trung bình',
-          note: 'Hồ sơ hiển thị cục bộ không tự suy diễn dữ liệu sức khỏe.',
-        },
-      },
-      items: cartItems,
-      processingTimeSeconds: 10,
-    };
-
-    setOrders((prev) => [newOrder, ...prev]);
-    setSelectedOrderId(newId);
     try {
-      await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newOrder),
-      });
+      const res = await fetch('/api/orders');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.success && data.orders && data.orders.length > 0) {
+          setOrders(data.orders);
+          setSelectedOrderId(data.orders[0].id);
+        }
+      }
     } catch (err) {
-      console.error('Failed to create customer order:', err);
+      console.error('Failed to sync customer order:', err);
     }
   };
 

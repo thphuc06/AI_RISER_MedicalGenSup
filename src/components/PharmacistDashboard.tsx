@@ -351,13 +351,28 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
                               Tiêu chuẩn
                             </span>
                           )}
-                          {ord.status === 'approved' && (
+                          {(ord.status === 'cho_duyet' || ord.status === 'pending') && (
+                            <span className="inline-block px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded uppercase">
+                              Chờ duyệt
+                            </span>
+                          )}
+                          {(ord.status === 'duoc_duyet' || ord.status === 'approved') && (
                             <span className="inline-block px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded uppercase">
-                              Đã duyệt
+                              Được duyệt
+                            </span>
+                          )}
+                          {ord.status === 'da_thanh_toan' && (
+                            <span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-800 text-[10px] font-bold rounded uppercase">
+                              Đã thanh toán
+                            </span>
+                          )}
+                          {(ord.status === 'da_huy' || ord.status === 'rejected') && (
+                            <span className="inline-block px-2 py-0.5 bg-red-100 text-red-800 text-[10px] font-bold rounded uppercase">
+                              Đã hủy
                             </span>
                           )}
                           {ord.status === 'calling' && (
-                            <span className="inline-block px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded uppercase animate-pulse">
+                            <span className="inline-block px-2 py-0.5 bg-purple-100 text-purple-800 text-[10px] font-bold rounded uppercase animate-pulse">
                               Đang gọi
                             </span>
                           )}
@@ -376,10 +391,32 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
               <>
                 <div className="mb-5 flex flex-wrap justify-between items-start gap-4">
                   <div>
-                    <h2 className="text-2xl font-bold text-[#181c1b]">
-                      Chi tiết đơn {selectedOrder.id}
-                    </h2>
-                    <p className="text-xs text-[#3e4946] mt-0.5">
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-2xl font-bold text-[#181c1b]">
+                        Chi tiết đơn {selectedOrder.id}
+                      </h2>
+                      {(selectedOrder.status === 'cho_duyet' || selectedOrder.status === 'pending') && (
+                        <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-xs font-bold rounded">
+                          Chờ duyệt
+                        </span>
+                      )}
+                      {(selectedOrder.status === 'duoc_duyet' || selectedOrder.status === 'approved') && (
+                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-xs font-bold rounded animate-pulse">
+                          Đã duyệt đơn thuốc
+                        </span>
+                      )}
+                      {selectedOrder.status === 'da_thanh_toan' && (
+                        <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-xs font-bold rounded">
+                          Đã thanh toán
+                        </span>
+                      )}
+                      {(selectedOrder.status === 'da_huy' || selectedOrder.status === 'rejected') && (
+                        <span className="px-2 py-0.5 bg-red-100 text-red-800 text-xs font-bold rounded">
+                          Đã hủy
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-[#3e4946] mt-1">
                       Bệnh nhân: <strong className="text-[#181c1b]">{selectedOrder.patientName}</strong> ({selectedOrder.patientAge} tuổi • {selectedOrder.patientPhone}) • Thời gian xử lý: <span className="font-semibold text-[#00685c]">{formatTimer(timerSeconds)}</span>
                     </p>
                   </div>

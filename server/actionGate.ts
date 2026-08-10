@@ -1,10 +1,21 @@
 export type ActionState = 'LISTENING' | 'TRANSCRIPT_PENDING' | 'CONFIRMED' | 'PROCESSING';
 
+export interface PendingCartOp {
+  type: 'add' | 'remove';
+  sku: string;
+  quantity?: number;
+  source?: string;
+}
+
 export class TranscriptActionGate {
   state: ActionState = 'LISTENING';
   confirmedTranscript = '';
+  pendingCartOp: PendingCartOp | null = null;
 
-  startListening() { this.state = 'LISTENING'; }
+  startListening() {
+    this.state = 'LISTENING';
+    this.pendingCartOp = null;
+  }
   markPending() { this.state = 'TRANSCRIPT_PENDING'; }
   confirm(text: string) {
     const value = text.trim();
@@ -14,6 +25,16 @@ export class TranscriptActionGate {
   }
   markProcessing() { if (this.state === 'CONFIRMED') this.state = 'PROCESSING'; }
   canMutate() { return Boolean(this.confirmedTranscript) && (this.state === 'CONFIRMED' || this.state === 'PROCESSING'); }
+
+  proposeCartOp(op: PendingCartOp) {
+    this.pendingCartOp = op;
+  }
+  getPendingCartOp() {
+    return this.pendingCartOp;
+  }
+  clearPendingCartOp() {
+    this.pendingCartOp = null;
+  }
 }
 
 export interface PendingProfileUpdate { field: string; value: string }

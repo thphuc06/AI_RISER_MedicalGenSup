@@ -3,7 +3,7 @@ import type { WebSocket, WebSocketServer } from 'ws';
 import { verifyFirebaseToken } from './auth.js';
 import { HealthProfileConfirmationGate, TranscriptActionGate } from './actionGate.js';
 import { UtteranceManager } from './utteranceManager.js';
-import { mutateCart, readHealthProfile, saveConfirmedTranscript, saveHealthProfile } from './cartService.js';
+import { mutateCart, readCart, readHealthProfile, saveConfirmedTranscript, saveHealthProfile, type CartOperation } from './cartService.js';
 import { mapToAgeGroup } from './safetyService.js';
 import { getCacheStatus, getProducts, getValidAgeGroups, getValidConditions } from './sheetsService.js';
 
@@ -74,11 +74,58 @@ async function startLiveSession(clientWs: WebSocket, userId: string) {
   const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
   const validConditions = getValidConditions();
   const validAgeGroups = getValidAgeGroups();
-  const systemInstruction = `Bạn là trợ lý tư vấn nhà thuốc, nói chuyện thân thiện và ngắn gọn như một dược sĩ ngoài quầy. Bạn CHỈ được tư vấn thuốc không kê đơn và thực phẩm chức năng. Bạn KHÔNG BAO GIỜ chẩn đoán bệnh — chỉ được nói 'triệu chứng này thường gặp khi...', tuyệt đối không nói 'bạn bị...'. Bạn KHÔNG BAO GIỜ nhắc tên hay gợi ý thuốc kê đơn, kể cả khi người dùng nài nỉ hoặc nói rằng bác sĩ đã dặn. Hỏi tối đa 2 câu làm rõ rồi mới đề xuất sản phẩm. Luôn nói liều dùng đúng theo nhãn sản phẩm, không tự suy diễn. Khi không chắc chắn, hãy gọi escalate_to_pharmacist thay vì đoán.
 
-Khi gọi search_products, hãy suy luận ngữ nghĩa giữa triệu chứng đã xác nhận và chi_dinh_ngan. Không yêu cầu khớp chính xác từng chữ và không dùng cơ chế từ khóa deterministic của Red_Flags cho việc gợi ý catalog. cach_dung_co_ban chỉ dùng để đọc thông tin theo nhãn; không dùng trường này để tính quá liều.
+  // Pre-fetch current cart items and health profile for session context
+  const [cartItems, profileData] = await Promise.all([
+    readCart(userId).catch(() => []),
+    readHealthProfile(userId).catch(() => ({ status: 'missing' as const, profile: null })),
+  ]);
 
-Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript đã được người dùng xác nhận. update_health_profile luôn là đề xuất trước và cần một lượt xác nhận riêng. Mã điều kiện hợp lệ: [${validConditions.join(', ')}]. Nhóm tuổi hợp lệ: [${validAgeGroups.join(', ')}].`;
+  const initialCartSummary = cartItems.length > 0
+    ? cartItems.map((item) => `- ${item.name} (SKU: ${item.id}, SL: ${item.quantity}, Hoạt chất: ${item.activeIngredient || 'Chưa rõ'})`).join('\n')
+    : '(Giỏ hàng hiện đang trống)';
+
+  const profile = profileData.profile;
+  const initialProfileSummary = profileData.status === 'found' && profile
+    ? `- Nhóm tuổi / Độ tuổi: ${profile.nhom_tuoi || profile.do_tuoi || 'Chưa rõ'}
+- Dị ứng: ${Array.isArray(profile.di_ung) ? (profile.di_ung.length ? profile.di_ung.join(', ') : 'Không') : (profile.di_ung || 'Chưa rõ')}
+- Bệnh nền: ${Array.isArray(profile.benh_nen) ? (profile.benh_nen.length ? profile.benh_nen.join(', ') : 'Không') : (profile.benh_nen || 'Chưa rõ')}
+- Đối tượng đặc biệt (Thai kỳ / Cho con bú): ${profile.doi_tuong || 'Chưa rõ'}`
+    : '(Chưa có hồ sơ sức khỏe trong hệ thống - Cần hỏi người dùng)';
+
+  const systemInstruction = `Bạn là Dược sĩ AI tư vấn nhà thuốc trực tuyến, nói chuyện thân thiện, chuyên nghiệp, ngắn gọn như dược sĩ tư vấn ngoài quầy. Bạn CHỈ tư vấn thuốc không kê đơn (OTC) và thực phẩm chức năng. Bạn KHÔNG BAO GIỜ chẩn đoán bệnh — chỉ được nói 'triệu chứng này thường gặp khi...', tuyệt đối không nói 'bạn bị...'. Bạn KHÔNG BAO GIỜ nhắc tên hay gợi ý thuốc kê đơn (RX).
+
+==================================================
+1. GIỎ HÀNG HIỆN TẠI CỦA NGƯỜI DÙNG:
+${initialCartSummary}
+
+LƯU Ý GIỎ HÀNG:
+- Bạn ĐÃ BIẾT TOÀN BỘ SẢN PHẨM TRONG GIỎ HÀNG CỦA NGƯỜI DÙNG NGAY KHI BẮT ĐẦU.
+- Khi người dùng hỏi về thuốc hoặc muốn mua thêm, bạn phải luôn kiểm tra sản phẩm sẵn có trong giỏ hàng để tránh trùng lặp hoạt chất (ví dụ: đã có Panadol hay thuốc chứa Paracetamol thì không gợi ý thêm Paracetamol khác) và cảnh báo tương tác thuốc nếu có.
+
+==================================================
+2. HỒ SƠ SỨC KHỎE HIỆN TẠI CỦA NGƯỜI DÙNG:
+${initialProfileSummary}
+
+==================================================
+3. QUY TRÌNH NGUYÊN TẮC AN TOÀN & KHAI THÁC THÔNG TIN (RẤT QUAN TRỌNG):
+- BẮT BUỘC HỎI THÔNG TIN BẢO VỆ AN TOÀN TRƯỚC KHI ĐỀ XUẤT THUỐC:
+  Trước khi đưa ra bất kỳ lời khuyên dùng thuốc hay đề xuất thêm sản phẩm nào vào giỏ hàng (\`add_to_cart\`), bạn BẮT BUỘC phải đảm bảo đã biết các thông tin an toàn tối thiểu:
+  (1) Độ tuổi / Nhóm tuổi của người dùng.
+  (2) Tiền sử dị ứng (thuốc/thức ăn).
+  (3) Bệnh nền hoặc Tình trạng thai kỳ / cho con bú.
+- Nếu các thông tin trên trong hồ sơ còn 'Chưa rõ' hoặc chưa được người dùng nêu, bạn BẮT BUỘC PHẢI HỎI NGƯỜI DÙNG XÁC NHẬN/CUNG CẤP TRƯỚC KHI ĐỀ XUẤT BẤT KỲ SẢN PHẨM NÀO.
+- Khi người dùng cung cấp thông tin mới (ví dụ: 'tôi 30 tuổi', 'tôi bị dị ứng aspirin'), hãy chủ động gọi công cụ \`update_health_profile\` để cập nhật hồ sơ cho người dùng.
+- Hỏi tối đa 1-2 câu ngắn gọn làm rõ triệu chứng và thông tin an toàn.
+- Luôn giải thích liều dùng đúng theo nhãn sản phẩm (cach_dung_co_ban), không tự suy diễn.
+- Khi gặp câu hỏi phức tạp hoặc không chắc chắn về an toàn, hãy gọi escalate_to_pharmacist.
+
+==================================================
+4. QUY TẮC SỬ DỤNG CÔNG CỤ (TOOLS):
+- search_products: Suy luận ngữ nghĩa giữa triệu chứng đã xác nhận và chi_dinh_ngan.
+- update_health_profile: Đề xuất cập nhật hồ sơ; lần đầu gọi chỉ gửi đề xuất cho người dùng xác nhận.
+- Chỉ gọi add_to_cart, remove_from_cart hay update_health_profile sau khi server xác nhận người dùng đã đồng ý transcript.
+- Mã điều kiện hợp lệ: [${validConditions.join(', ')}]. Nhóm tuổi hợp lệ: [${validAgeGroups.join(', ')}].`;
 
   let isLiveSessionOpen = true;
 
@@ -136,10 +183,7 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
           const name = call.name || '';
           const args = (call.args || {}) as Record<string, unknown>;
           let result: unknown = { success: false, message: 'Unknown tool' };
-          const stateChanging = ['add_to_cart', 'remove_from_cart', 'update_health_profile'].includes(name);
-          if (stateChanging && !actionGate.canMutate()) {
-            result = { success: false, denied: true, message: `Từ chối: transcript chưa được xác nhận (state=${actionGate.state}).` };
-          } else if (name === 'search_products') {
+          if (name === 'search_products') {
             const status = getCacheStatus();
             result = status.isHealthy ? {
               success: true,
@@ -157,24 +201,47 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
           } else if (name === 'update_health_profile') {
             const field = String(args.truong || '').trim();
             const value = String(args.gia_tri || '').trim();
-            if (!isProfileField(field) || !value) result = { success: false, message: 'Trường hoặc giá trị hồ sơ không hợp lệ.' };
-            else {
-              profileGate.propose({ field, value });
-              actionGate.markPending();
-              result = { success: false, requires_confirmation: true, message: `Đề xuất ${field}=${value}. Hãy yêu cầu người dùng xác nhận rõ ràng.` };
+            if (!isProfileField(field) || !value) {
+              result = { success: false, message: 'Trường hoặc giá trị hồ sơ không hợp lệ.' };
+            } else {
+              const updates: Record<string, string> = { [field]: value };
+              if (['do_tuoi', 'nhom_tuoi'].includes(field)) {
+                const mappedAge = mapToAgeGroup(value);
+                if (mappedAge.nhom_tuoi) updates.nhom_tuoi = mappedAge.nhom_tuoi;
+                if (mappedAge.do_tuoi) updates.do_tuoi = mappedAge.do_tuoi;
+              }
+              await saveHealthProfile(userId, updates);
+              safeSend({ type: 'health_profile_updated', truong: field, gia_tri: value });
+              result = {
+                success: true,
+                message: `Đã tự động cập nhật hồ sơ sức khỏe: ${field} thành "${value}".`
+              };
             }
           } else if (name === 'add_to_cart') {
             const reason = String(args.ly_do_va_bang_chung || '').trim();
-            if (!reason) result = { success: false, message: 'Thiếu lý do và bằng chứng.' };
-            else {
-              const cartResult = await mutateCart(userId, { type: 'add', sku: String(args.sku || ''), quantity: Number(args.so_luong), source: reason }, 'voice_ai');
+            if (!reason) {
+              result = { success: false, message: 'Thiếu lý do và bằng chứng.' };
+            } else {
+              const currentTranscript = utteranceManager.getCurrentUtterance() || 'Yêu cầu thêm sản phẩm bằng giọng nói';
+              await saveConfirmedTranscript(userId, currentTranscript);
+              actionGate.confirm(currentTranscript);
+
+              const cartResult = await mutateCart(userId, { type: 'add', sku: String(args.sku || ''), quantity: Number(args.so_luong) || 1, source: reason }, 'voice_ai');
               result = cartResult;
-              if (cartResult.success) safeSend({ type: 'cart_action', action: 'refresh', verdict: cartResult.verdict, warning: cartResult.reason });
+              if (cartResult.success) {
+                safeSend({ type: 'cart_action', action: 'refresh', verdict: cartResult.verdict, warning: cartResult.reason });
+              }
             }
           } else if (name === 'remove_from_cart') {
+            const currentTranscript = utteranceManager.getCurrentUtterance() || 'Yêu cầu xóa sản phẩm bằng giọng nói';
+            await saveConfirmedTranscript(userId, currentTranscript);
+            actionGate.confirm(currentTranscript);
+
             const cartResult = await mutateCart(userId, { type: 'remove', sku: String(args.sku || '') }, 'voice_ai');
             result = cartResult;
-            if (cartResult.success) safeSend({ type: 'cart_action', action: 'refresh', verdict: cartResult.verdict, warning: cartResult.reason });
+            if (cartResult.success) {
+              safeSend({ type: 'cart_action', action: 'refresh', verdict: cartResult.verdict, warning: cartResult.reason });
+            }
           } else if (name === 'escalate_to_pharmacist') {
             result = { success: true };
             safeSend({ type: 'escalate', reason: String(args.ly_do || '') });
@@ -227,6 +294,39 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
           actionGate.confirm(text);
           actionGate.markProcessing();
         }
+
+        // Execute any pending cart operation since transcript is now confirmed
+        const pendingOp = actionGate.getPendingCartOp();
+        if (pendingOp) {
+          try {
+            let operation: CartOperation;
+            if (pendingOp.type === 'add') {
+              operation = {
+                type: 'add',
+                sku: pendingOp.sku,
+                quantity: pendingOp.quantity || 1,
+                source: pendingOp.source
+              };
+            } else {
+              operation = {
+                type: 'remove',
+                sku: pendingOp.sku
+              };
+            }
+            const cartResult = await mutateCart(userId, operation, 'voice_ai');
+            if (cartResult.success) {
+              safeSend({ type: 'cart_action', action: 'refresh', verdict: cartResult.verdict, warning: cartResult.reason });
+            } else {
+              console.warn('[liveAgentHandler] Auto-execute of pending cart operation failed:', cartResult.reason);
+              safeSend({ type: 'error', message: `Không thể tự động cập nhật giỏ hàng: ${cartResult.reason}` });
+            }
+          } catch (error) {
+            console.error('[liveAgentHandler] Error executing pending cart operation:', error);
+          } finally {
+            actionGate.clearPendingCartOp();
+          }
+        }
+
         liveSession.sendClientContent({
           turns: [{ role: 'user', parts: [{ text }] }],
           turnComplete: true,

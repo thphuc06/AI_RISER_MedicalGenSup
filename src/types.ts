@@ -1,6 +1,6 @@
 export type OrderPriority = 'Cần gọi' | 'Nhanh' | 'Tiêu chuẩn';
 
-export type OrderStatus = 'pending' | 'processing' | 'approved' | 'rejected' | 'calling';
+export type OrderStatus = 'pending' | 'processing' | 'approved' | 'rejected' | 'calling' | 'cho_duyet' | 'duoc_duyet' | 'da_thanh_toan' | 'da_huy';
 
 export interface CartItem {
   id: string;

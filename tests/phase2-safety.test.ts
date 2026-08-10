@@ -203,3 +203,25 @@ test('20. health profile normalizer maps Vietnamese disease terms and age inputs
   const mappedCondition = mapToConditionCode('tiểu đường');
   assert.equal(mappedCondition, 'dai_thao_duong');
 });
+
+test('25. direct active ingredient allergy blocks product with matching ingredient', () => {
+  const dummyData: SafetyData = {
+    products: [{ sku: 'ASP1', ten_san_pham: 'Aspirin 500', hoat_chat: 'aspirin', ham_luong_mg: '500 mg', dang_bao_che: 'viên', nhom: 'giảm đau', rx_status: 'OTC', gia: 1000, ton_kho: 20, chi_dinh_ngan: 'Đau nhức', cach_dung_co_ban: 'Uống sau ăn' }],
+    contraindications: [], // Empty contraindications sheet
+    maxDoses: [],
+    redFlags: [],
+    isHealthy: true,
+    lastSuccessfulRefresh: new Date(),
+    lastRefreshAttempt: new Date(),
+    lastError: null,
+  };
+  const safety = evaluateSafety({
+    cart: [{ sku: 'ASP1', quantity: 1 }],
+    healthProfile: { di_ung: ['aspirin'], nhom_tuoi: 'nguoi_lon' },
+    confirmedTranscript: 'đau đầu',
+    safetyData: dummyData,
+  });
+  assert.equal(safety.verdict, 'BLOCK');
+  assert.match(safety.reason || '', /Chống chỉ định dị ứng/);
+  assert.match(safety.reason || '', /aspirin/);
+});

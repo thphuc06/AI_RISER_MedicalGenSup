@@ -201,7 +201,8 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
       const profile = profileSnapshot.exists ? profileSnapshot.data() as HealthProfile : null;
       const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript, safetyData });
       if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
-      transaction.set(orderRef, { userId, items, confirmedTranscript, customer, safetyVerdict: safety.verdict, safetyReason: safety.reason || null, status: 'pending', serverSecret: SERVER_SECRET, createdAt: FieldValue.serverTimestamp() });
+      transaction.set(orderRef, { userId, items, confirmedTranscript, customer, safetyVerdict: safety.verdict, safetyReason: safety.reason || null, status: 'cho_duyet', serverSecret: SERVER_SECRET, createdAt: FieldValue.serverTimestamp() });
+      transaction.set(cartRef, { items: [], confirmedTranscript: '' }, { merge: true });
       return { success: true, orderId: orderRef.id, ...safety };
     });
   } catch (error) {
@@ -215,6 +216,7 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
       const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript, safetyData });
       if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
       const orderId = `preview_order_${Date.now()}`;
+      previewCarts.set(userId, { items: [], confirmedTranscript: '' });
       return { success: true, orderId, ...safety };
     }
     return { success: false, verdict: 'BLOCK' as const, reason: `Không thể xác minh hoặc tạo đơn: ${error instanceof Error ? error.message : String(error)}` };

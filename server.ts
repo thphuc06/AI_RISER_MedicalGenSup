@@ -91,10 +91,56 @@ async function startServer() {
 
   app.post('/api/cart/checkout', requireFirebaseUser, async (req: AuthenticatedRequest, res) => {
     if (!req.userId) return res.status(401).json({ success: false, error: 'Authentication required' });
-    const result = await checkoutCart(req.userId, {
-      name: String(req.body?.customer?.name || '').slice(0, 120), phone: String(req.body?.customer?.phone || '').slice(0, 40), address: String(req.body?.customer?.address || '').slice(0, 300),
-    });
-    return res.status(result.success ? 200 : 409).json(result);
+    const customer = {
+      name: String(req.body?.customer?.name || '').slice(0, 120),
+      phone: String(req.body?.customer?.phone || '').slice(0, 40),
+      address: String(req.body?.customer?.address || '').slice(0, 300),
+    };
+    try {
+      const cartItems = await readCart(req.userId);
+      const profileRes = await readHealthProfile(req.userId);
+      const profile = profileRes.profile || {};
+      const result = await checkoutCart(req.userId, customer);
+      if (result.success && result.orderId) {
+        const id = `#${result.orderId}`;
+        const timestamp = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+        
+        const newOrder = {
+          id,
+          docId: result.orderId,
+          userId: req.userId,
+          timestamp,
+          patientName: customer.name,
+          patientAge: Number(profile.do_tuoi || profile.nhom_tuoi || 60),
+          patientPhone: customer.phone,
+          patientAddress: customer.address,
+          priority: 'Tiêu chuẩn',
+          status: 'cho_duyet',
+          voiceTranscript: cartItems.length > 0 ? (cartItems[0].source || '') : '',
+          clinicalSummary: {
+            gender: profile.gender || 'Nam',
+            age: Number(profile.do_tuoi || profile.nhom_tuoi || 60),
+            medicalHistory: profile.benh_nen ? (Array.isArray(profile.benh_nen) ? profile.benh_nen : String(profile.benh_nen).split(',').map((s: string) => s.trim())) : [],
+            symptoms: 'Đặt hàng mới qua Voice Shopping App.',
+            aiTriage: {
+              category: 'Voice Shopping Order (Live)',
+              riskLevel: result.verdict === 'WARN' ? 'Trung bình' : 'Thấp',
+              note: result.reason || 'Sức khỏe bình thường.',
+            },
+          },
+          items: cartItems,
+          processingTimeSeconds: 10,
+          notes: '',
+          totalPrice: cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0),
+          createdAt: new Date().toISOString(),
+        };
+        previewOrders.set(id, newOrder);
+      }
+      return res.status(result.success ? 200 : 409).json(result);
+    } catch (err: any) {
+      console.error('Checkout endpoint error:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
   });
 
   app.post('/api/health-profile', requireFirebaseUser, async (req: AuthenticatedRequest, res) => {
@@ -130,22 +176,25 @@ async function startServer() {
   // In-memory fallback for orders in preview mode when Firestore permissions are restricted
   const previewOrders = new Map<string, any>();
 
-  // REST endpoints for Orders managing (reads/writes bypassed to Firestore orders collection securely via Admin SDK)
-  app.get('/api/orders', async (_req, res) => {
+  // Get orders of the authenticated user
+  app.get('/api/my-orders', requireFirebaseUser, async (req: AuthenticatedRequest, res) => {
+    if (!req.userId) return res.status(401).json({ success: false, error: 'Authentication required' });
     try {
       const { adminDb } = await import('./server/firebaseAdmin.js');
-      const snapshot = await adminDb.collection('orders').get();
+      const snapshot = await adminDb.collection('orders').where('userId', '==', req.userId).get();
       const orders = snapshot.docs.map((doc) => {
         const data = doc.data();
         const id = data.id || `#${doc.id}`;
-        const item = {
+        return {
           id,
+          docId: doc.id,
           timestamp: data.timestamp || '08:00',
-          patientName: data.patientName || 'Khách hàng',
+          patientName: data.patientName || data.customer?.name || 'Khách hàng',
           patientAge: data.patientAge || data.clinicalSummary?.age || 0,
-          patientPhone: data.patientPhone || '',
+          patientPhone: data.patientPhone || data.customer?.phone || '',
+          patientAddress: data.customer?.address || '',
           priority: data.priority || 'Tiêu chuẩn',
-          status: data.status || 'pending',
+          status: data.status || 'cho_duyet',
           voiceTranscript: data.voiceTranscript || data.confirmedTranscript || '',
           clinicalSummary: {
             gender: data.clinicalSummary?.gender || 'Nam',
@@ -162,14 +211,76 @@ async function startServer() {
           processingTimeSeconds: data.processingTimeSeconds || 10,
           notes: data.notes || '',
           totalPrice: data.totalPrice || 0,
+          createdAt: data.createdAt ? (data.createdAt.toDate ? data.createdAt.toDate().toISOString() : data.createdAt) : null,
+        };
+      });
+
+      // Sort my-orders by createdAt descending
+      orders.sort((a, b) => {
+        const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tB - tA;
+      });
+
+      return res.json({ success: true, orders });
+    } catch (error) {
+      console.warn('[MyOrdersService] Firestore reading error, serving in-memory filtered orders.');
+      const userOrders = Array.from(previewOrders.values()).filter(o => o.userId === req.userId);
+      return res.json({ success: true, orders: userOrders });
+    }
+  });
+
+  // REST endpoints for Orders managing (reads/writes bypassed to Firestore orders collection securely via Admin SDK)
+  app.get('/api/orders', async (_req, res) => {
+    try {
+      const { adminDb } = await import('./server/firebaseAdmin.js');
+      const snapshot = await adminDb.collection('orders').get();
+      const orders = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        const id = data.id || `#${doc.id}`;
+        const item = {
+          id,
+          docId: doc.id,
+          userId: data.userId || null,
+          timestamp: data.timestamp || '08:00',
+          patientName: data.patientName || data.customer?.name || 'Khách hàng',
+          patientAge: data.patientAge || data.clinicalSummary?.age || 0,
+          patientPhone: data.patientPhone || data.customer?.phone || '',
+          patientAddress: data.customer?.address || '',
+          priority: data.priority || 'Tiêu chuẩn',
+          status: data.status || 'cho_duyet',
+          voiceTranscript: data.voiceTranscript || data.confirmedTranscript || '',
+          clinicalSummary: {
+            gender: data.clinicalSummary?.gender || 'Nam',
+            age: data.clinicalSummary?.age || data.patientAge || 0,
+            medicalHistory: data.clinicalSummary?.medicalHistory || [],
+            symptoms: data.clinicalSummary?.symptoms || '',
+            aiTriage: {
+              category: data.clinicalSummary?.aiTriage?.category || 'Chưa phân loại',
+              riskLevel: data.clinicalSummary?.aiTriage?.riskLevel || 'Thấp',
+              note: data.clinicalSummary?.aiTriage?.note || '',
+            },
+          },
+          items: data.items || [],
+          processingTimeSeconds: data.processingTimeSeconds || 10,
+          notes: data.notes || '',
+          totalPrice: data.totalPrice || 0,
+          createdAt: data.createdAt ? (data.createdAt.toDate ? data.createdAt.toDate().toISOString() : data.createdAt) : null,
         };
         previewOrders.set(id, item);
         return item;
       });
+      // Sort orders by createdAt descending
+      orders.sort((a, b) => {
+        const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tB - tA;
+      });
       return res.json({ success: true, orders });
     } catch (error) {
       console.warn('[OrdersService] Firestore error in preview mode, serving in-memory orders fallback.');
-      return res.json({ success: true, orders: Array.from(previewOrders.values()) });
+      const allOrders = Array.from(previewOrders.values());
+      return res.json({ success: true, orders: allOrders });
     }
   });
 
@@ -197,13 +308,31 @@ async function startServer() {
   app.post('/api/orders/:id/approve', async (req, res) => {
     const { id } = req.params;
     if (previewOrders.has(id)) {
-      previewOrders.get(id).status = 'approved';
+      previewOrders.get(id).status = 'duoc_duyet';
     }
     try {
       const { adminDb, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
       const docId = id.replace('#', '');
       await adminDb.collection('orders').doc(docId).update({
-        status: 'approved',
+        status: 'duoc_duyet',
+        serverSecret: SERVER_SECRET,
+      });
+    } catch (error) {
+      console.warn('[OrdersService] Firestore update error in preview mode, updated in-memory.');
+    }
+    return res.json({ success: true });
+  });
+
+  app.post('/api/orders/:id/pay', async (req, res) => {
+    const { id } = req.params;
+    if (previewOrders.has(id)) {
+      previewOrders.get(id).status = 'da_thanh_toan';
+    }
+    try {
+      const { adminDb, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
+      const docId = id.replace('#', '');
+      await adminDb.collection('orders').doc(docId).update({
+        status: 'da_thanh_toan',
         serverSecret: SERVER_SECRET,
       });
     } catch (error) {
@@ -216,14 +345,14 @@ async function startServer() {
     const { id } = req.params;
     if (previewOrders.has(id)) {
       const existing = previewOrders.get(id);
-      existing.status = 'calling';
+      existing.status = 'da_huy';
       existing.priority = 'Cần gọi';
     }
     try {
       const { adminDb, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
       const docId = id.replace('#', '');
       await adminDb.collection('orders').doc(docId).update({
-        status: 'calling',
+        status: 'da_huy',
         priority: 'Cần gọi',
         serverSecret: SERVER_SECRET,
       });

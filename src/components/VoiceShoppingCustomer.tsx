@@ -56,7 +56,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
       },
       onInputTranscript: (text) => {
         setTranscript(text);
-        setStatusMessage('👉 Đã nhận diện câu nói. Bấm nút "Xác nhận & Gửi tới Dược sĩ AI" bên dưới để Dược sĩ AI xử lý!');
+        setStatusMessage('👉 Đã nhận diện câu nói: "' + text + '" - Dược sĩ AI đang xử lý tự động...');
       },
       onOutputTranscript: (text) => {
         setAiResponseText((prev) => (prev ? prev + ' ' + text : text));
@@ -86,6 +86,10 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         setTimeout(() => {
           if (onSwitchToPharmacistView) onSwitchToPharmacistView();
         }, 2000);
+      },
+      onInterrupted: () => {
+        setAiResponseText('');
+        setStatusMessage('⏹️ AI đã bị ngắt câu trả lời.');
       },
       onError: (err) => {
         console.error('[VoiceShoppingCustomer] Live Agent error:', err);
@@ -180,6 +184,31 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
   const [activeTab, setActiveTab] = useState<'home' | 'products' | 'prescriptions' | 'profile'>('home');
   const [products, setProducts] = useState<any[]>([]);
   const [productSearchQuery, setProductSearchQuery] = useState<string>('');
+  
+  const [myOrders, setMyOrders] = useState<any[]>([]);
+  const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
+
+  const fetchMyOrders = async () => {
+    if (!user) return;
+    setIsLoadingOrders(true);
+    try {
+      const res = await fetch('/api/my-orders');
+      const data = await res.json();
+      if (data.success) {
+        setMyOrders(data.orders || []);
+      }
+    } catch (err) {
+      console.error('Error fetching user orders:', err);
+    } finally {
+      setIsLoadingOrders(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user && activeTab === 'prescriptions') {
+      fetchMyOrders();
+    }
+  }, [user, activeTab]);
 
   useEffect(() => {
     const fetchProducts = async () => {
@@ -278,10 +307,39 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     setAiResponseText('');
   };
 
+  const handleStopAiSpeaking = () => {
+    if (clientRef.current) {
+      clientRef.current.stopAudioOutput();
+    }
+    setAiResponseText('');
+    setStatusMessage('⏹️ Đã dừng Dược sĩ AI phát âm thanh.');
+    setNotification('🔇 Đã tắt âm thanh Dược sĩ AI');
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  const handleClearConversation = () => {
+    if (clientRef.current) {
+      clientRef.current.stopAudioOutput();
+      clientRef.current.stopRecording();
+    }
+    setIsListening(false);
+    setTranscript('');
+    setAiResponseText('');
+    setStatusMessage('🧹 Đã xóa cuộc hội thoại. Hãy bấm nút mic để bắt đầu mới.');
+    setNotification('🧹 Đã xóa nội dung cuộc hội thoại');
+    setTimeout(() => setNotification(null), 3000);
+  };
+
   // REQUIREMENT 2: SEND CONFIRMED/EDITED TRANSCRIPT
   const handleConfirmAndSendTranscript = () => {
     if (!transcript.trim()) return;
     setIsEditingTranscript(false);
+
+    if (/(dừng lại|ngừng nói|im lặng|tắt đi|tắt ai|thôi)/i.test(transcript)) {
+      handleStopAiSpeaking();
+      return;
+    }
+
     setAiResponseText('');
     if (clientRef.current) {
       clientRef.current.prepareAudioOutput();
@@ -306,7 +364,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     if (!clientRef.current) return;
     setIsListening(false);
     clientRef.current.stopRecording();
-    setStatusMessage('✍️ Đã ghi âm xong. Hãy bấm nút "Xác nhận & Gửi tới Dược sĩ AI" màu xanh bên dưới để Dược sĩ AI trả lời.');
+    setStatusMessage('✍️ Đã ghi âm xong. Dược sĩ AI đang phân tích và xử lý...');
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -353,6 +411,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
       await checkoutServerCart(user, { name: customerName, phone: customerPhone, address: customerAddress });
       setCheckoutSuccess(true);
       onSendOrderToPharmacist?.(cartItems.filter((i) => !i.isDisabled && i.quantity > 0), transcript);
+      setTimeout(() => {
+        fetchMyOrders();
+      }, 500);
     } catch (error) {
       setNotification(error instanceof Error ? error.message : 'Kiểm tra an toàn cuối cùng thất bại.');
       return;
@@ -361,6 +422,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     setTimeout(() => {
       setShowCheckoutModal(false);
       setCheckoutSuccess(false);
+      setActiveTab('prescriptions');
     }, 2500);
   };
 
@@ -622,6 +684,29 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   <span className="material-symbols-outlined text-sm">send</span>
                   Xác nhận & Gửi tới Dược sĩ AI
                 </button>
+
+                {/* Control Action Buttons: Stop Speaking & Clear Conversation */}
+                <div className="flex items-center gap-2 pt-1 border-t border-gray-200/80">
+                  <button
+                    type="button"
+                    onClick={handleStopAiSpeaking}
+                    className="flex-1 py-1 px-2.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer active:scale-95 shadow-2xs"
+                    title="Dừng âm thanh AI đang đọc"
+                  >
+                    <span className="material-symbols-outlined text-sm">volume_off</span>
+                    Dừng AI nói
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleClearConversation}
+                    className="flex-1 py-1 px-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer active:scale-95 shadow-2xs"
+                    title="Xóa nội dung cuộc hội thoại hiện tại"
+                  >
+                    <span className="material-symbols-outlined text-sm">delete_sweep</span>
+                    Xóa hội thoại
+                  </button>
+                </div>
               </div>
 
               {/* AI Realtime Speech Response Box */}
@@ -966,20 +1051,142 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
 
         {/* Prescriptions Tab */}
         {activeTab === 'prescriptions' && (
-          <div className="p-4 max-w-sm mx-auto space-y-4">
-            <h2 className="text-lg font-bold text-[#00685c]">Đơn thuốc & Lịch sử</h2>
-            <div className="bg-white border rounded-xl p-4 shadow-xs space-y-3">
-              <div className="flex justify-between items-center border-b pb-2">
-                <span className="font-bold text-sm">#MD-8821 (Gần nhất)</span>
-                <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">Đã duyệt</span>
-              </div>
-              <p className="text-xs text-gray-600">Bệnh nhân: Trần Văn Nam (68 tuổi)</p>
-              <p className="text-xs text-gray-600">Triệu chứng: Sốt nhẹ, ho kéo dài 3 ngày</p>
-              <div className="text-xs bg-gray-50 p-2 rounded text-gray-700">
-                • Panadol Extra (x2 vỉ) - 90.000đ<br />
-                • Eugica Fort (x1 chai) - 95.000đ
-              </div>
+          <div className="p-4 max-w-sm mx-auto space-y-4 pb-16">
+            <div className="flex justify-between items-center">
+              <h2 className="text-lg font-bold text-[#00685c]">Đơn thuốc & Lịch sử</h2>
+              <button
+                onClick={fetchMyOrders}
+                disabled={isLoadingOrders}
+                className="text-xs font-semibold text-[#00685c] hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <span className={`material-symbols-outlined text-xs ${isLoadingOrders ? 'animate-spin' : ''}`}>refresh</span>
+                Làm mới
+              </button>
             </div>
+
+            {isLoadingOrders && myOrders.length === 0 ? (
+              <div className="text-center py-8 text-xs text-slate-500">
+                Đang tải đơn thuốc...
+              </div>
+            ) : myOrders.length === 0 ? (
+              <div className="bg-white rounded-xl p-6 text-center border border-dashed border-[#bdc9c5]">
+                <span className="material-symbols-outlined text-3xl text-[#00685c]/60 mb-2">description</span>
+                <p className="font-bold text-xs text-gray-800">Chưa có đơn thuốc nào</p>
+                <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                  Đơn thuốc của bạn sau khi gửi yêu cầu duyệt sẽ hiển thị tại đây để bạn theo dõi và thanh toán.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3.5">
+                {myOrders.map((order) => {
+                  const items = order.items || [];
+                  const isPending = order.status === 'cho_duyet' || order.status === 'pending';
+                  const isApproved = order.status === 'duoc_duyet' || order.status === 'approved';
+                  const isPaid = order.status === 'da_thanh_toan';
+                  const isCancelled = order.status === 'da_huy' || order.status === 'rejected';
+
+                  return (
+                    <div key={order.id} className="bg-white border border-[#bdc9c5] rounded-xl p-4 shadow-xs space-y-3 transition-all hover:shadow-md">
+                      <div className="flex justify-between items-center border-b pb-2 border-slate-100">
+                        <span className="font-bold text-xs text-gray-400">#{order.id.substring(0, 8)}</span>
+                        {isPending && (
+                          <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded font-bold uppercase">
+                            Chờ duyệt
+                          </span>
+                        )}
+                        {isApproved && (
+                          <span className="text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded font-bold uppercase animate-pulse">
+                            Được duyệt
+                          </span>
+                        )}
+                        {isPaid && (
+                          <span className="text-[10px] bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded font-bold uppercase">
+                            Đã thanh toán
+                          </span>
+                        )}
+                        {isCancelled && (
+                          <span className="text-[10px] bg-red-50 text-red-800 border border-red-200 px-2 py-0.5 rounded font-bold uppercase">
+                            Đã hủy
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="space-y-1 text-xs text-gray-600">
+                        <p><span className="font-medium text-gray-800">Người nhận:</span> {order.patientName || 'Chưa cập nhật'}</p>
+                        {order.patientPhone && <p><span className="font-medium text-gray-800">Số điện thoại:</span> {order.patientPhone}</p>}
+                        {order.patientAddress && <p><span className="font-medium text-gray-800">Giao tới:</span> {order.patientAddress}</p>}
+                        {order.voiceTranscript && (
+                          <p className="italic bg-gray-50 p-1.5 rounded border border-gray-100 text-[11px] mt-1 text-gray-500">
+                            " {order.voiceTranscript} "
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="bg-[#fcfdfd] border border-slate-100 p-2.5 rounded text-xs space-y-1">
+                        <p className="font-bold text-[11px] text-[#00685c] mb-1">Danh mục thuốc:</p>
+                        {items.map((it: any, idx: number) => (
+                          <div key={idx} className="flex justify-between text-gray-700 text-[11px]">
+                            <span>• {it.name} (x{it.quantity} {it.unit || 'phần'})</span>
+                            <span>{((it.price || 0) * (it.quantity || 1)).toLocaleString('vi-VN')}đ</span>
+                          </div>
+                        ))}
+                        <div className="border-t border-slate-100 pt-1.5 mt-1.5 font-bold text-xs flex justify-between text-[#00685c]">
+                          <span>Tổng giá:</span>
+                          <span>{(order.totalPrice || items.reduce((sum: number, it: any) => sum + (it.price || 0) * (it.quantity || 1), 0)).toLocaleString('vi-VN')}đ</span>
+                        </div>
+                      </div>
+
+                      {/* Pay Button if Approved */}
+                      {isApproved && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`/api/orders/${order.id}/pay`, { method: 'POST' });
+                              const result = await res.json();
+                              if (result.success) {
+                                setNotification('💰 Đã thanh toán đơn thuốc thành công! Nhà thuốc đang giao hàng cho bạn.');
+                                fetchMyOrders();
+                              } else {
+                                setNotification('⚠️ Thanh toán không thành công. Vui lòng thử lại.');
+                              }
+                              setTimeout(() => setNotification(null), 3000);
+                            } catch (error) {
+                              console.error('Error paying order:', error);
+                            }
+                          }}
+                          className="w-full bg-[#00685c] hover:bg-[#005047] text-white py-2 rounded-lg font-bold text-xs transition-all shadow-xs hover:shadow-md cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.98]"
+                        >
+                          <span className="material-symbols-outlined text-sm">payments</span>
+                          Thanh toán đơn thuốc này
+                        </button>
+                      )}
+
+                      {/* Status Warnings or Information */}
+                      {isPending && (
+                        <div className="p-2 bg-amber-50 rounded-lg text-[10px] text-amber-800 font-medium flex gap-1 items-start">
+                          <span className="material-symbols-outlined text-xs shrink-0 mt-0.5 animate-bounce">pending</span>
+                          <span>Vui lòng đợi Bác sĩ/Dược sĩ lâm sàng xem xét đơn thuốc. Bạn sẽ có thể thanh toán sau khi đơn được phê duyệt.</span>
+                        </div>
+                      )}
+
+                      {isPaid && (
+                        <div className="p-2 bg-emerald-50 rounded-lg text-[10px] text-emerald-800 font-medium flex gap-1 items-start">
+                          <span className="material-symbols-outlined text-xs shrink-0 mt-0.5">local_shipping</span>
+                          <span>Đơn hàng đã thanh toán. Đang trên đường vận chuyển tới địa chỉ của bạn!</span>
+                        </div>
+                      )}
+
+                      {isCancelled && (
+                        <div className="p-2 bg-red-50 rounded-lg text-[10px] text-red-800 font-medium flex gap-1 items-start">
+                          <span className="material-symbols-outlined text-xs shrink-0 mt-0.5">cancel</span>
+                          <span>Đơn thuốc bị từ chối hoặc hủy bỏ do không đảm bảo an toàn lâm sàng.</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -1262,9 +1469,10 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
             </div>
             <button
               onClick={() => setShowCheckoutModal(true)}
-              className="bg-[#00685c] w-full text-white text-sm font-bold h-10 rounded-md flex items-center justify-center hover:bg-[#005047] transition-all cursor-pointer shadow-xs"
+              className="bg-[#00685c] w-full text-white text-sm font-bold h-10 rounded-md flex items-center justify-center hover:bg-[#005047] transition-all cursor-pointer shadow-xs gap-1"
             >
-              Thanh toán
+              <span className="material-symbols-outlined text-base">rate_review</span>
+              Yêu cầu duyệt đơn thuốc
             </button>
           </div>
         )}
@@ -1335,20 +1543,20 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         <div className="absolute inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-3 overflow-y-auto">
           <div className="bg-surface-container-lowest rounded-t-2xl sm:rounded-2xl max-w-md w-full p-6 shadow-2xl border border-outline-variant max-h-[90vh] overflow-y-auto">
             {checkoutSuccess ? (
-              <div className="text-center py-8 space-y-3">
+              <div className="text-center py-8 space-y-3 animate-fade-in">
                 <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto text-3xl animate-bounce">
-                  <span className="material-symbols-outlined">check_circle</span>
+                  <span className="material-symbols-outlined">rate_review</span>
                 </div>
-                <h3 className="font-bold text-xl text-primary">Đặt hàng thành công!</h3>
+                <h3 className="font-bold text-xl text-primary">Gửi yêu cầu thành công!</h3>
                 <p className="text-sm text-on-surface-variant">
-                  Đơn hàng đã được chuyển tới <span className="font-bold text-on-surface">Dược sĩ Trực</span> để kiểm duyệt lâm sàng AI.
+                  Yêu cầu duyệt đơn thuốc đã được chuyển tới <span className="font-bold text-on-surface">Bác sĩ & Dược sĩ trực</span> để kiểm tra lâm sàng. Bạn có thể tiến hành thanh toán ngay sau khi đơn được phê duyệt!
                 </p>
               </div>
             ) : (
               <>
                 <div className="flex justify-between items-center border-b pb-3 mb-4">
                   <h3 className="font-bold text-lg text-primary flex items-center gap-2">
-                    <span className="material-symbols-outlined">shopping_bag</span> Xác nhận đơn hàng
+                    <span className="material-symbols-outlined">rate_review</span> Yêu cầu duyệt đơn thuốc
                   </h3>
                   <button
                     onClick={() => setShowCheckoutModal(false)}
@@ -1393,7 +1601,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   </div>
 
                   <div className="border-t pt-3">
-                    <p className="font-bold mb-2">Tóm tắt đơn hàng:</p>
+                    <p className="font-bold mb-2">Tóm tắt đơn thuốc chờ duyệt:</p>
                     <div className="space-y-1 bg-surface-container p-3 rounded-lg text-xs">
                       {cartItems
                         .filter((i) => !i.isDisabled && i.quantity > 0)
@@ -1408,7 +1616,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                           </div>
                         ))}
                       <div className="border-t border-outline-variant/60 pt-2 font-bold text-sm flex justify-between text-primary">
-                        <span>Tổng cộng:</span>
+                        <span>Tổng tiền dự kiến:</span>
                         <span>{calculateTotal().toLocaleString('vi-VN')}đ</span>
                       </div>
                     </div>
@@ -1417,7 +1625,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   <div className="p-3 bg-primary/5 rounded-lg text-xs text-primary font-medium flex gap-2">
                     <span className="material-symbols-outlined text-base">smart_toy</span>
                     <span>
-                      Đơn hàng sẽ được Dược sĩ lâm sàng xác minh tương tác thuốc trước khi đóng gói giao hàng.
+                      Dược sĩ lâm sàng sẽ kiểm tra tương tác hoạt chất, bệnh nền và dị ứng trước khi phê duyệt đơn thuốc này.
                     </span>
                   </div>
 
@@ -1431,9 +1639,10 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                     </button>
                     <button
                       type="submit"
-                      className="flex-1 py-3 bg-primary text-on-primary rounded-xl font-bold hover:bg-surface-tint"
+                      className="flex-1 py-3 bg-primary text-on-primary rounded-xl font-bold hover:bg-surface-tint flex items-center justify-center gap-1.5"
                     >
-                      Gửi tới Dược sĩ
+                      <span className="material-symbols-outlined text-sm">send</span>
+                      Gửi yêu cầu duyệt
                     </button>
                   </div>
                 </form>

@@ -174,6 +174,34 @@ export function evaluateSafety(input: EvaluateSafetyInput): SafetyResult {
     }
   }
 
+  // EXPLICIT ACTIVE INGREDIENT ALLERGY RULE:
+  // Direct check for ingredient-level allergies in health profile (e.g. Di ung aspirin + San pham chua aspirin -> BLOCK)
+  const rawAllergies: string[] = [];
+  if (healthProfile) {
+    const diUng = healthProfile.di_ung || (healthProfile as any).allergies;
+    if (Array.isArray(diUng)) rawAllergies.push(...diUng.map(String));
+    else if (typeof diUng === 'string') rawAllergies.push(...diUng.split(/[;,]/));
+  }
+  const userAllergies = rawAllergies.map((a) => normalizeText(a)).filter(Boolean);
+
+  if (userAllergies.length > 0) {
+    for (const { product } of resolved) {
+      const ingredients = parseActiveIngredients(product.hoat_chat);
+      for (const ingredient of ingredients) {
+        for (const allergy of userAllergies) {
+          const normAllergy = normalizeText(allergy);
+          const normIng = normalizeText(ingredient);
+          if (normIng && normAllergy && (normIng === normAllergy || normIng.includes(normAllergy) || normAllergy.includes(normIng))) {
+            return {
+              verdict: 'BLOCK',
+              reason: `Chống chỉ định dị ứng: Hồ sơ sức khỏe cho biết người dùng dị ứng với '${allergy}', sản phẩm ${product.ten_san_pham} (SKU: ${product.sku}) có chứa hoạt chất '${ingredient}'.`,
+            };
+          }
+        }
+      }
+    }
+  }
+
   const conditions = new Set(profileValues(healthProfile));
   let warningReason = '';
   for (const { product } of resolved) {
