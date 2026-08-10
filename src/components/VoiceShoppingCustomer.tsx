@@ -56,6 +56,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
       },
       onInputTranscript: (text) => {
         setTranscript(text);
+        setStatusMessage('👉 Đã nhận diện câu nói. Bấm nút "Xác nhận & Gửi tới Dược sĩ AI" bên dưới để Dược sĩ AI xử lý!');
       },
       onOutputTranscript: (text) => {
         setAiResponseText((prev) => (prev ? prev + ' ' + text : text));
@@ -87,7 +88,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         }, 2000);
       },
       onError: (err) => {
-        setStatusMessage(`Trợ lý thoại tạm dừng (Hết quota/Lỗi). Bạn vẫn có thể mua sắm thủ công ở tab Danh mục.`);
+        console.error('[VoiceShoppingCustomer] Live Agent error:', err);
+        setStatusMessage(`⚠️ ${err}`);
+        setNotification(`Lỗi Dược sĩ AI: ${err}`);
         setIsConnected(false);
       },
     }, () => user.getIdToken());
@@ -205,8 +208,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
       setNotification(`🛒 Đã thêm ${prod.ten_san_pham} vào giỏ hàng`);
       setTimeout(() => setNotification(null), 3000);
     } catch (err) {
-      console.error('Failed to add product to cart:', err);
-      setNotification(err instanceof Error ? err.message : 'Không thể thêm vào giỏ hàng');
+      console.warn('[Safety Check] Prevented duplicate or unsafe item addition:', err);
+      setNotification(`⚠️ ${err instanceof Error ? err.message : 'Không thể thêm vào giỏ hàng'}`);
+      setTimeout(() => setNotification(null), 5000);
     }
   };
 
@@ -280,16 +284,21 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     setIsEditingTranscript(false);
     setAiResponseText('');
     if (clientRef.current) {
+      clientRef.current.prepareAudioOutput();
       clientRef.current.sendConfirmedText(transcript);
-      setStatusMessage('Đã gửi câu nói tới Dược sĩ AI...');
+      setStatusMessage('🤖 Dược sĩ AI đang phân tích và chuẩn bị trả lời bằng giọng nói...');
     }
   };
 
   // Mic Press / Hold handlers
+  const isHoldingRef = useRef(false);
+  const pressTimerRef = useRef<any>(null);
+
   const handleStartMic = async () => {
     if (!clientRef.current) return;
     setIsListening(true);
-    setStatusMessage('Đang lắng nghe... Hãy nói triệu chứng của bạn');
+    setAiResponseText('');
+    setStatusMessage('🎙️ Đang lắng nghe... Hãy nói triệu chứng của bạn');
     await clientRef.current.startRecording();
   };
 
@@ -297,10 +306,39 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     if (!clientRef.current) return;
     setIsListening(false);
     clientRef.current.stopRecording();
-    setStatusMessage('Đã ngưng nhận mic. Bạn có thể sửa câu nói trước khi gửi.');
+    setStatusMessage('✍️ Đã ghi âm xong. Hãy bấm nút "Xác nhận & Gửi tới Dược sĩ AI" màu xanh bên dưới để Dược sĩ AI trả lời.');
   };
 
-  const handleToggleMic = () => {
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    isHoldingRef.current = false;
+    if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
+
+    pressTimerRef.current = setTimeout(() => {
+      isHoldingRef.current = true;
+      if (!isListening) {
+        handleStartMic();
+      }
+    }, 200);
+  };
+
+  const handlePointerUp = () => {
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+    if (isHoldingRef.current) {
+      handleStopMic();
+      setTimeout(() => {
+        isHoldingRef.current = false;
+      }, 150);
+    }
+  };
+
+  const handleTapToggle = () => {
+    if (isHoldingRef.current) {
+      return;
+    }
     if (isListening) {
       handleStopMic();
     } else {
@@ -616,12 +654,11 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
 
               {/* REQUIREMENT 1: 3D Mic & Hold-to-Talk / Tap-to-Talk */}
               <div
-                onMouseDown={handleStartMic}
-                onMouseUp={handleStopMic}
-                onTouchStart={handleStartMic}
-                onTouchEnd={handleStopMic}
-                onClick={handleToggleMic}
-                className="relative w-[180px] h-[180px] sm:w-[200px] sm:h-[200px] flex items-center justify-center my-1 cursor-pointer select-none"
+                onPointerDown={handlePointerDown}
+                onPointerUp={handlePointerUp}
+                onPointerLeave={handlePointerUp}
+                onClick={handleTapToggle}
+                className="relative w-[180px] h-[180px] sm:w-[200px] sm:h-[200px] flex items-center justify-center my-1 cursor-pointer select-none touch-none"
               >
                 <ThreeMicSphere isListening={isListening} />
               </div>
@@ -629,12 +666,11 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
               {/* Status Line */}
               <div className="flex items-center gap-2">
                 <button
-                  onMouseDown={handleStartMic}
-                  onMouseUp={handleStopMic}
-                  onTouchStart={handleStartMic}
-                  onTouchEnd={handleStopMic}
-                  onClick={handleToggleMic}
-                  className={`flex items-center gap-2 text-primary font-label-lg text-sm font-semibold cursor-pointer py-1.5 px-4 rounded-full transition-all shadow-xs ${
+                  onPointerDown={handlePointerDown}
+                  onPointerUp={handlePointerUp}
+                  onPointerLeave={handlePointerUp}
+                  onClick={handleTapToggle}
+                  className={`flex items-center gap-2 text-primary font-label-lg text-sm font-semibold cursor-pointer py-1.5 px-4 rounded-full transition-all shadow-xs touch-none select-none ${
                     isListening ? 'animate-pulse bg-red-500 text-white font-bold' : 'bg-surface-container text-on-surface-variant hover:bg-gray-200'
                   }`}
                 >
@@ -644,7 +680,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   >
                     {isListening ? 'mic' : 'mic_none'}
                   </span>
-                  <span>{isListening ? 'Đang thu âm... (Buông ra để ngưng)' : 'Giữ nút để nói'}</span>
+                  <span>{isListening ? 'Đang thu âm... (Buông ra để ngưng)' : 'Giữ hoặc bấm nút để nói'}</span>
                 </button>
               </div>
             </section>

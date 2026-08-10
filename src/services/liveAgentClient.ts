@@ -110,7 +110,22 @@ export class LiveAgentClient {
     }, 2500);
   }
 
+  public prepareAudioOutput() {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!this.audioCtxOutput) {
+        this.audioCtxOutput = new AudioCtx({ sampleRate: 24000 });
+      }
+      if (this.audioCtxOutput.state === 'suspended') {
+        this.audioCtxOutput.resume();
+      }
+    } catch (err) {
+      console.warn('[LiveAgentClient] Error preparing audio output:', err);
+    }
+  }
+
   public sendConfirmedText(text: string) {
+    this.prepareAudioOutput();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(
         JSON.stringify({
@@ -142,9 +157,11 @@ export class LiveAgentClient {
         return;
       }
 
-      this.ws?.send(JSON.stringify({ type: 'audio_start' }));
-
       this.audioCtxInput = new AudioCtx({ sampleRate: 16000 });
+      if (this.audioCtxInput.state === 'suspended') {
+        await this.audioCtxInput.resume();
+      }
+
       await this.audioCtxInput.audioWorklet.addModule('/pcm-capture-worklet.js');
 
       if (!this.isRecording) {
@@ -174,6 +191,10 @@ export class LiveAgentClient {
       };
 
       this.sourceNode.connect(this.workletNode);
+
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'audio_start' }));
+      }
     } catch (err: any) {
       console.error('[LiveAgentClient] Failed to start recording:', err);
       this.callbacks.onError?.('Không thể truy cập Microphone: ' + err.message);

@@ -80,23 +80,43 @@ Khi gọi search_products, hãy suy luận ngữ nghĩa giữa triệu chứng �
 
 Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript đã được người dùng xác nhận. update_health_profile luôn là đề xuất trước và cần một lượt xác nhận riêng. Mã điều kiện hợp lệ: [${validConditions.join(', ')}]. Nhóm tuổi hợp lệ: [${validAgeGroups.join(', ')}].`;
 
-  const liveSession = await ai.live.connect({
-    model: 'gemini-3.1-flash-live-preview',
-    config: {
-      responseModalities: [Modality.AUDIO], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-      systemInstruction, tools: [{ functionDeclarations: tools }], inputAudioTranscription: {}, outputAudioTranscription: {},
-      realtimeInputConfig: {
-        automaticActivityDetection: {
-          disabled: true,
+  let isLiveSessionOpen = true;
+
+  let liveSession: any = null;
+  try {
+    liveSession = await ai.live.connect({
+      model: 'gemini-3.1-flash-live-preview',
+      config: {
+        responseModalities: [Modality.AUDIO], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+        systemInstruction, tools: [{ functionDeclarations: tools }], inputAudioTranscription: {}, outputAudioTranscription: {},
+        realtimeInputConfig: {
+          automaticActivityDetection: {
+            disabled: true,
+          },
         },
       },
-    },
-    callbacks: {
-      onmessage: async (message: LiveServerMessage) => {
-        for (const part of message.serverContent?.modelTurn?.parts || []) {
-          if (part.inlineData?.data) safeSend({ type: 'audio', audio: part.inlineData.data });
-        }
-        if (message.serverContent?.interrupted) safeSend({ type: 'interrupted' });
+      callbacks: {
+        onerror: (err: any) => {
+          console.error('[liveAgentHandler] Gemini Live session error:', err);
+          safeSend({ type: 'error', message: `Lỗi kết nối Dược sĩ AI: ${err?.message || String(err)}` });
+        },
+        onclose: (event: any) => {
+          isLiveSessionOpen = false;
+          console.warn('[liveAgentHandler] Gemini Live session closed:', event?.code, event?.reason);
+          const rawReason = event?.reason || (event?.target as any)?._closeMessage?.toString() || '';
+          let msg = 'Kết nối Dược sĩ AI đã đóng.';
+          if (event?.code === 1011 || rawReason.includes('prepayment credits') || rawReason.includes('RESOURCE_EXHAUSTED')) {
+            msg = '⚠️ Tài khoản Gemini API Key hiện đã hết hạn mức credit (Prepayment credits depleted). Vui lòng cập nhật API Key khả dụng trong phần Cấu hình Settings.';
+          } else if (rawReason) {
+            msg = `Kết nối Dược sĩ AI bị gián đoạn: ${rawReason}`;
+          }
+          safeSend({ type: 'error', message: msg });
+        },
+        onmessage: async (message: LiveServerMessage) => {
+          for (const part of message.serverContent?.modelTurn?.parts || []) {
+            if (part.inlineData?.data) safeSend({ type: 'audio', audio: part.inlineData.data });
+          }
+          if (message.serverContent?.interrupted) safeSend({ type: 'interrupted' });
 
         const inputText = message.serverContent?.inputTranscription?.text;
         if (inputText) {
@@ -161,10 +181,8 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
           }
           responses.push({ name, id: call.id, response: { result } });
         }
-        liveSession.sendToolResponse({ functionResponses: responses });
+        liveSession?.sendToolResponse?.({ functionResponses: responses });
       },
-      onerror: (error) => safeSend({ type: 'error', message: error.message || 'Gemini Live session error' }),
-      onclose: () => safeSend({ type: 'session_closed' }),
     },
   });
 
@@ -172,6 +190,10 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
   clientWs.on('message', async (raw) => {
     try {
       const message = JSON.parse(raw.toString()) as ClientMessage;
+      if (!isLiveSessionOpen || !liveSession) {
+        safeSend({ type: 'error', message: 'Dược sĩ AI chưa sẵn sàng hoặc kết nối Live đã bị ngắt. Hãy kiểm tra API key trong Settings.' });
+        return;
+      }
       if (message.type === 'audio_start') {
         utteranceManager.startUtterance();
         actionGate.startListening();
@@ -205,9 +227,20 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
           actionGate.confirm(text);
           actionGate.markProcessing();
         }
-        liveSession.sendRealtimeInput({ text });
+        liveSession.sendClientContent({
+          turns: [{ role: 'user', parts: [{ text }] }],
+          turnComplete: true,
+        });
       }
     } catch (error) { safeSend({ type: 'error', message: error instanceof Error ? error.message : String(error) }); }
   });
-  clientWs.on('close', () => { try { liveSession.close(); } catch { /* already closed */ } });
+    clientWs.on('close', () => { try { liveSession?.close(); } catch { /* already closed */ } });
+  } catch (err: any) {
+    isLiveSessionOpen = false;
+    console.error('[liveAgentHandler] Failed to initialize live session:', err);
+    safeSend({
+      type: 'error',
+      message: `Không thể khởi tạo Gemini Live: ${err?.message || String(err)}. Kiểm tra API Key trong Settings.`
+    });
+  }
 }
