@@ -2,6 +2,7 @@ import { GoogleGenAI, Modality, Type, type FunctionDeclaration, type LiveServerM
 import type { WebSocket, WebSocketServer } from 'ws';
 import { verifyFirebaseToken } from './auth.js';
 import { HealthProfileConfirmationGate, TranscriptActionGate } from './actionGate.js';
+import { UtteranceManager } from './utteranceManager.js';
 import { mutateCart, readHealthProfile, saveConfirmedTranscript, saveHealthProfile } from './cartService.js';
 import { mapToAgeGroup } from './safetyService.js';
 import { getCacheStatus, getProducts, getValidAgeGroups, getValidConditions } from './sheetsService.js';
@@ -68,9 +69,7 @@ async function startLiveSession(clientWs: WebSocket, userId: string) {
   };
   const actionGate = new TranscriptActionGate();
   const profileGate = new HealthProfileConfirmationGate();
-  let pendingUserTranscript = '';
-  let confirmedSafetyTranscript = '';
-  let modelTranscript = '';
+  const utteranceManager = new UtteranceManager();
 
   const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
   const validConditions = getValidConditions();
@@ -86,6 +85,11 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
     config: {
       responseModalities: [Modality.AUDIO], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
       systemInstruction, tools: [{ functionDeclarations: tools }], inputAudioTranscription: {}, outputAudioTranscription: {},
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          disabled: true,
+        },
+      },
     },
     callbacks: {
       onmessage: async (message: LiveServerMessage) => {
@@ -96,13 +100,13 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
 
         const inputText = message.serverContent?.inputTranscription?.text;
         if (inputText) {
-          pendingUserTranscript = `${pendingUserTranscript} ${inputText}`.trim();
+          const current = utteranceManager.appendInputFragment(inputText);
           actionGate.markPending();
-          safeSend({ type: 'input_transcript', text: pendingUserTranscript });
+          safeSend({ type: 'input_transcript', text: current });
         }
         const outputText = message.serverContent?.outputTranscription?.text;
         if (outputText) {
-          modelTranscript = `${modelTranscript} ${outputText}`.trim();
+          const modelText = utteranceManager.appendOutputFragment(outputText);
           safeSend({ type: 'output_transcript', text: outputText });
         }
 
@@ -168,11 +172,18 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
   clientWs.on('message', async (raw) => {
     try {
       const message = JSON.parse(raw.toString()) as ClientMessage;
-      if (message.type === 'audio_start') actionGate.startListening();
-      else if (message.type === 'audio_input' && message.audio) liveSession.sendRealtimeInput({ audio: { data: message.audio, mimeType: 'audio/pcm;rate=16000' } });
-      else if (message.type === 'audio_end') actionGate.markPending();
-      else if (message.type === 'confirm_transcript' && message.text?.trim()) {
+      if (message.type === 'audio_start') {
+        utteranceManager.startUtterance();
+        actionGate.startListening();
+        liveSession.sendRealtimeInput({ activityStart: {} });
+      } else if (message.type === 'audio_input' && message.audio) {
+        liveSession.sendRealtimeInput({ audio: { data: message.audio, mimeType: 'audio/pcm;rate=16000' } });
+      } else if (message.type === 'audio_end') {
+        actionGate.markPending();
+        liveSession.sendRealtimeInput({ activityEnd: {} });
+      } else if (message.type === 'confirm_transcript' && message.text?.trim()) {
         const text = message.text.trim();
+        utteranceManager.confirm(text);
         const confirmedProfileUpdate = profileGate.confirm(text);
         if (confirmedProfileUpdate) {
           const updates: Record<string, string> = { [confirmedProfileUpdate.field]: confirmedProfileUpdate.value };
@@ -183,16 +194,14 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
           }
           await saveHealthProfile(userId, updates);
           safeSend({ type: 'health_profile_updated', truong: confirmedProfileUpdate.field, gia_tri: confirmedProfileUpdate.value });
-          if (confirmedSafetyTranscript) {
-            actionGate.confirm(confirmedSafetyTranscript);
+          if (utteranceManager.getConfirmedTranscript()) {
+            actionGate.confirm(utteranceManager.getConfirmedTranscript());
             actionGate.markProcessing();
           } else {
             actionGate.markPending();
           }
         } else {
           await saveConfirmedTranscript(userId, text);
-          confirmedSafetyTranscript = text;
-          pendingUserTranscript = text;
           actionGate.confirm(text);
           actionGate.markProcessing();
         }

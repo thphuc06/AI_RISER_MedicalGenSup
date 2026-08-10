@@ -4,8 +4,8 @@ export class TranscriptActionGate {
   state: ActionState = 'LISTENING';
   confirmedTranscript = '';
 
-  startListening() { this.state = 'LISTENING'; this.confirmedTranscript = ''; }
-  markPending() { this.state = 'TRANSCRIPT_PENDING'; this.confirmedTranscript = ''; }
+  startListening() { this.state = 'LISTENING'; }
+  markPending() { this.state = 'TRANSCRIPT_PENDING'; }
   confirm(text: string) {
     const value = text.trim();
     if (!value) throw new Error('Confirmed transcript cannot be empty');
