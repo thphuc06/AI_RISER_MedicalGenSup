@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Be Vietnam Pro', sans-serif;
+  
+  --color-on-surface: #181c1b;
+  --color-on-surface-variant: #3e4946;
+  --color-tertiary-container: #ac6049;
+  --color-background: #f6faf8;
+  --color-surface-container-low: #f1f4f2;
+  --color-surface: #f6faf8;
+  --color-secondary-fixed: #ffddb8;
+  --color-inverse-surface: #2d3130;
+  --color-outline: #6e7976;
+  --color-on-secondary-fixed-variant: #653e00;
+  --color-surface-container-highest: #dfe3e1;
+  --color-on-background: #181c1b;
+  --color-primary-container: #218274;
+  --color-on-primary-fixed: #00201b;
+  --color-surface-container-lowest: #ffffff;
+  --color-on-secondary-fixed: #2a1700;
+  --color-tertiary-fixed: #ffdbd1;
+  --color-secondary-container: #fea619;
+  --color-error-container: #ffdad6;
+  --color-surface-variant: #dfe3e1;
+  --color-surface-bright: #f6faf8;
+  --color-on-tertiary: #ffffff;
+  --color-on-tertiary-container: #fffbff;
+  --color-on-tertiary-fixed: #3b0a00;
+  --color-surface-container: #ebefec;
+  --color-surface-tint: #006b5e;
+  --color-on-tertiary-fixed-variant: #743421;
+  --color-inverse-primary: #7ed6c6;
+  --color-primary-fixed: #9af3e2;
+  --color-primary-fixed-dim: #7ed6c6;
+  --color-tertiary-fixed-dim: #ffb59f;
+  --color-on-primary-fixed-variant: #005047;
+  --color-on-primary: #ffffff;
+  --color-on-secondary-container: #684000;
+  --color-on-primary-container: #f4fffb;
+  --color-primary: #00685c;
+  --color-tertiary: #8e4833;
+  --color-surface-dim: #d7dbd9;
+  --color-on-secondary: #ffffff;
+  --color-outline-variant: #bdc9c5;
+  --color-on-error: #ffffff;
+  --color-on-error-container: #93000a;
+  --color-surface-container-high: #e5e9e7;
+  --color-inverse-on-surface: #eef2ef;
+  --color-secondary: #855300;
+  --color-secondary-fixed-dim: #ffb95f;
+  --color-error: #ba1a1a;
+}
+
+body {
+  font-family: 'Be Vietnam Pro', sans-serif;
+  background-color: #f6faf8;
+  color: #181c1b;
+  margin: 0;
+}
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+.soft-shadow {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* Scrollbar styling for high density views */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #bdc9c5;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00685c;
+}
+
+

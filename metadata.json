@@ -1,0 +1,6 @@
+{
+  "name": "VietMed Care - AI Pharmacy System",
+  "description": "Hệ thống kiểm duyệt đơn thuốc AI dành cho Dược sĩ và ứng dụng mua thuốc bằng giọng nói Voice Shopping cho bệnh nhân.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

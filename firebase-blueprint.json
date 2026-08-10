@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "carts": {
+      "title": "Carts",
+      "description": "Realtime shopping carts for patients and Voice Shopping",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "items": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "orders": {
+      "title": "Orders",
+      "description": "Prescription and OTC pharmacy orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "patientName": { "type": "string" },
+        "items": { "type": "array" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      }
+    },
+    "health_profiles": {
+      "title": "Health Profiles",
+      "description": "Patient health profiles, chronic conditions, and allergies",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "patientName": { "type": "string" },
+        "age": { "type": "number" },
+        "gender": { "type": "string" },
+        "medicalHistory": { "type": "array" }
+      }
+    }
+  }
+}

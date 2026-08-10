@@ -1,0 +1,41 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isPharmacist() {
+      return signedIn() && exists(/databases/$(database)/documents/authorized_pharmacists/$(request.auth.uid));
+    }
+
+    function hasServerSecret(data) {
+      return data != null && data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC';
+    }
+
+    match /carts/{cartId} {
+      allow get: if (signedIn() && cartId == 'user_' + request.auth.uid) || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC') || resource == null;
+      allow list: if signedIn() && cartId == 'user_' + request.auth.uid;
+      allow create, update: if hasServerSecret(request.resource.data);
+      allow delete: if hasServerSecret(resource.data);
+    }
+    match /orders/{orderId} {
+      allow get: if (signedIn() && (resource.data.userId == request.auth.uid || isPharmacist())) || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC') || resource == null;
+      allow list: if signedIn() && (resource.data.userId == request.auth.uid || isPharmacist());
+      allow create, update: if hasServerSecret(request.resource.data);
+      allow delete: if hasServerSecret(resource.data);
+    }
+    match /health_profiles/{profileId} {
+      allow get: if (signedIn() && profileId == request.auth.uid) || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC') || resource == null;
+      allow list: if signedIn() && profileId == request.auth.uid;
+      allow create, update: if hasServerSecret(request.resource.data);
+      allow delete: if hasServerSecret(resource.data);
+    }
+    match /authorized_pharmacists/{userId} {
+      allow get: if (signedIn() && userId == request.auth.uid) || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC') || resource == null;
+      allow list: if signedIn() && userId == request.auth.uid;
+      allow create, update: if hasServerSecret(request.resource.data);
+      allow delete: if hasServerSecret(resource.data);
+    }
+  }
+}
