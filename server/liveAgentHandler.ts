@@ -3,6 +3,7 @@ import type { WebSocket, WebSocketServer } from 'ws';
 import { verifyFirebaseToken } from './auth.js';
 import { HealthProfileConfirmationGate, TranscriptActionGate } from './actionGate.js';
 import { mutateCart, readHealthProfile, saveConfirmedTranscript, saveHealthProfile } from './cartService.js';
+import { mapToAgeGroup } from './safetyService.js';
 import { getCacheStatus, getProducts, getValidAgeGroups, getValidConditions } from './sheetsService.js';
 
 interface ClientMessage { type: 'authenticate' | 'audio_start' | 'audio_input' | 'audio_end' | 'confirm_transcript'; idToken?: string; audio?: string; text?: string }
@@ -31,7 +32,7 @@ const tools: FunctionDeclaration[] = [
 ];
 
 function isProfileField(field: string): boolean {
-  return ['benh_nen', 'doi_tuong', 'di_ung', 'nhom_tuoi'].includes(field);
+  return ['benh_nen', 'doi_tuong', 'di_ung', 'nhom_tuoi', 'do_tuoi', 'ghi_chu_suckhoe'].includes(field);
 }
 
 export function setupLiveAgentWebSocket(wss: WebSocketServer) {
@@ -131,10 +132,8 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
             }
           } else if (name === 'update_health_profile') {
             const field = String(args.truong || '').trim();
-            const value = String(args.gia_tri || '').trim().toLowerCase();
-            const invalidCondition = ['benh_nen', 'doi_tuong'].includes(field) && !validConditions.includes(value);
-            const invalidAgeGroup = field === 'nhom_tuoi' && !validAgeGroups.includes(value);
-            if (!isProfileField(field) || !value || invalidCondition || invalidAgeGroup) result = { success: false, message: 'Trường hoặc giá trị hồ sơ không hợp lệ.' };
+            const value = String(args.gia_tri || '').trim();
+            if (!isProfileField(field) || !value) result = { success: false, message: 'Trường hoặc giá trị hồ sơ không hợp lệ.' };
             else {
               profileGate.propose({ field, value });
               actionGate.markPending();
@@ -176,7 +175,13 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
         const text = message.text.trim();
         const confirmedProfileUpdate = profileGate.confirm(text);
         if (confirmedProfileUpdate) {
-          await saveHealthProfile(userId, { [confirmedProfileUpdate.field]: confirmedProfileUpdate.value });
+          const updates: Record<string, string> = { [confirmedProfileUpdate.field]: confirmedProfileUpdate.value };
+          if (['do_tuoi', 'nhom_tuoi'].includes(confirmedProfileUpdate.field)) {
+            const mappedAge = mapToAgeGroup(confirmedProfileUpdate.value);
+            if (mappedAge.nhom_tuoi) updates.nhom_tuoi = mappedAge.nhom_tuoi;
+            if (mappedAge.do_tuoi) updates.do_tuoi = mappedAge.do_tuoi;
+          }
+          await saveHealthProfile(userId, updates);
           safeSend({ type: 'health_profile_updated', truong: confirmedProfileUpdate.field, gia_tri: confirmedProfileUpdate.value });
           if (confirmedSafetyTranscript) {
             actionGate.confirm(confirmedSafetyTranscript);

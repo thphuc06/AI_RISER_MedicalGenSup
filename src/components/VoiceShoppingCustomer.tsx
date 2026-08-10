@@ -326,23 +326,30 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     }, 2500);
   };
 
+  const [profileErrorMsg, setProfileErrorMsg] = useState<string | null>(null);
+
   const handleSaveHealthProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingProfile(true);
+    setProfileErrorMsg(null);
     try {
       if (!user) throw new Error('Vui lòng đăng nhập trước khi lưu hồ sơ.');
       await saveHealthProfile(user, healthProfile);
       setProfileSavedMsg(true);
       setTimeout(() => setProfileSavedMsg(false), 3000);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving health profile:', err);
+      setProfileErrorMsg(err.message || 'Không thể lưu hồ sơ sức khỏe.');
     } finally {
       setIsSavingProfile(false);
     }
   };
 
-  const handleAddQuickTag = (type: 'benh_nen' | 'di_ung', tag: string) => {
+  const handleAddQuickTag = (type: 'benh_nen' | 'di_ung' | 'do_tuoi', tag: string) => {
     setHealthProfile((prev) => {
+      if (type === 'do_tuoi') {
+        return { ...prev, do_tuoi: tag, nhom_tuoi: tag };
+      }
       const currentVal = prev[type] || '';
       if (currentVal.toLowerCase().includes(tag.toLowerCase())) return prev;
       const newVal = currentVal ? `${currentVal}, ${tag}` : tag;
@@ -1062,28 +1069,28 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   type="text"
                   value={healthProfile.benh_nen || ''}
                   onChange={(e) => setHealthProfile({ ...healthProfile, benh_nen: e.target.value })}
-                  placeholder="Nhập bệnh nền (ví dụ: Cao huyết áp, Sốt cao, Dạ dày...)"
+                  placeholder="Nhập bệnh nền (ví dụ: Cao huyết áp, Tiểu đường, Dạ dày...)"
                   className="w-full text-xs p-2 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:border-[#00685c] focus:outline-none font-semibold text-gray-900"
                 />
                 {/* Quick Tags */}
                 <div className="flex flex-wrap gap-1 mt-1.5">
                   <button
                     type="button"
-                    onClick={() => handleAddQuickTag('benh_nen', 'tang_huyet_ap_nang')}
+                    onClick={() => handleAddQuickTag('benh_nen', 'Cao huyết áp')}
                     className="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-200 font-medium cursor-pointer"
                   >
                     + Cao huyết áp
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleAddQuickTag('benh_nen', 'dai_thao_duong')}
+                    onClick={() => handleAddQuickTag('benh_nen', 'Tiểu đường')}
                     className="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-200 font-medium cursor-pointer"
                   >
                     + Tiểu đường
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleAddQuickTag('benh_nen', 'loet_da_day_ta_trang')}
+                    onClick={() => handleAddQuickTag('benh_nen', 'Loét dạ dày-tá tràng')}
                     className="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-200 font-medium cursor-pointer"
                   >
                     + Loét dạ dày-tá tràng
@@ -1132,16 +1139,41 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
 
               {/* Field 3: Độ tuổi & Nhóm đối tượng */}
               <div>
-                <label className="block text-xs font-bold text-gray-800 mb-1">
-                  3. Độ tuổi / Nhóm đối tượng đặc biệt:
+                <label className="block text-xs font-bold text-gray-800 mb-1 flex items-center justify-between">
+                  <span>3. Độ tuổi / Nhóm đối tượng:</span>
+                  <span className="text-[10px] font-normal text-gray-500">(Cần cho tính liều an toàn Max_Dose)</span>
                 </label>
                 <input
                   type="text"
-                  value={healthProfile.nhom_tuoi || ''}
-                  onChange={(e) => setHealthProfile({ ...healthProfile, nhom_tuoi: e.target.value })}
-                  placeholder="Mã nhóm từ Max_Dose (ví dụ: nguoi_lon)"
-                  className="w-full text-xs p-2 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:border-[#00685c] focus:outline-none font-medium text-gray-900"
+                  value={healthProfile.do_tuoi || healthProfile.nhom_tuoi || ''}
+                  onChange={(e) => setHealthProfile({ ...healthProfile, do_tuoi: e.target.value, nhom_tuoi: e.target.value })}
+                  placeholder="Nhập tuổi hoặc nhóm (ví dụ: 40 tuổi, 68 tuổi, Người lớn, Trẻ em...)"
+                  className="w-full text-xs p-2 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:border-[#00685c] focus:outline-none font-semibold text-gray-900"
                 />
+                {/* Quick Age Tags */}
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleAddQuickTag('do_tuoi', '40 tuổi')}
+                    className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
+                  >
+                    + Người lớn (12-59t)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAddQuickTag('do_tuoi', '68 tuổi')}
+                    className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
+                  >
+                    + Người cao tuổi (≥60t)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAddQuickTag('do_tuoi', '8 tuổi')}
+                    className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
+                  >
+                    + Trẻ em (&lt;12t)
+                  </button>
+                </div>
               </div>
 
               {/* Field 4: Ghi chú sức khỏe bổ sung */}
@@ -1158,9 +1190,15 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 />
               </div>
 
+              {profileErrorMsg && (
+                <div className="p-2 bg-red-100 text-red-800 text-xs font-bold rounded-lg text-center animate-fade-in">
+                  ❌ {profileErrorMsg}
+                </div>
+              )}
+
               {profileSavedMsg && (
                 <div className="p-2 bg-emerald-100 text-emerald-800 text-xs font-bold rounded-lg text-center animate-fade-in">
-                  ✓ Đã lưu thành công hồ sơ sức khỏe!
+                  ✓ Đã lưu thành công hồ sơ sức khỏe & đồng bộ Firestore!
                 </div>
               )}
 

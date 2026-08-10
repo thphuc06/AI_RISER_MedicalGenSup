@@ -67,7 +67,7 @@ export function healthProfileFromDocument(exists: boolean, data?: Record<string,
 }
 
 export async function saveHealthProfile(userId: string, profile: HealthProfile): Promise<void> {
-  await adminDb.collection('health_profiles').doc(userId).set({ ...profile, userId, serverSecret: SERVER_SECRET, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await adminDb.collection('health_profiles').doc(userId).set({ ...profile, userId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
 }
 
 export async function saveConfirmedTranscript(userId: string, transcript: string): Promise<void> {

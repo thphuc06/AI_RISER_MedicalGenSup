@@ -7,6 +7,7 @@ import { WebSocketServer } from 'ws';
 import { requireFirebaseUser, type AuthenticatedRequest } from './server/auth.js';
 import { checkoutCart, mutateCart, saveHealthProfile, readCart, readHealthProfile, type CartOperation } from './server/cartService.js';
 import { setupLiveAgentWebSocket } from './server/liveAgentHandler.js';
+import { mapToAgeGroup } from './server/safetyService.js';
 import { getCacheStatus, getContraindications, getMaxDoses, getProducts, getRedFlags, getValidAgeGroups, getValidConditions, loadAllSheets, startPeriodicRefresh } from './server/sheetsService.js';
 
 const EXPECTED_PROJECT_ID = 'project-c55c421d-248e-4800-bfb';
@@ -99,13 +100,28 @@ async function startServer() {
   app.post('/api/health-profile', requireFirebaseUser, async (req: AuthenticatedRequest, res) => {
     if (!req.userId || !req.body?.confirmed) return res.status(400).json({ success: false, error: 'Explicit confirmation is required' });
     const input = req.body.profile && typeof req.body.profile === 'object' ? req.body.profile as Record<string, unknown> : {};
-    const profile = Object.fromEntries(['benh_nen', 'doi_tuong', 'di_ung', 'nhom_tuoi', 'do_tuoi', 'ghi_chu_suckhoe'].filter((field) => typeof input[field] === 'string').map((field) => [field, String(input[field]).slice(0, 500)]));
-    const conditionValues = ['benh_nen', 'doi_tuong'].flatMap((field) => String(profile[field] || '').split(/[;,]/).map((item) => item.trim().toLowerCase()).filter(Boolean));
-    if (conditionValues.some((value) => !getValidConditions().includes(value))) return res.status(400).json({ success: false, error: 'Bệnh nền/đối tượng phải dùng đúng mã điều kiện từ dữ liệu an toàn.' });
-    if (profile.nhom_tuoi && !getValidAgeGroups().includes(profile.nhom_tuoi.toLowerCase())) return res.status(400).json({ success: false, error: 'Nhóm tuổi không tồn tại trong Max_Dose.' });
+    
+    const rawBenhNen = String(input.benh_nen || input.conditions || '').slice(0, 500);
+    const rawDoiTuong = String(input.doi_tuong || '').slice(0, 500);
+    const rawDiUng = String(input.di_ung || '').slice(0, 500);
+    const rawNhomTuoi = String(input.nhom_tuoi || '').slice(0, 500);
+    const rawDoTuoi = String(input.do_tuoi || '').slice(0, 500);
+    const rawGhiChu = String(input.ghi_chu_suckhoe || '').slice(0, 500);
+
+    const mappedAge = mapToAgeGroup(rawDoTuoi || rawNhomTuoi);
+
+    const profile: Record<string, unknown> = {
+      benh_nen: rawBenhNen,
+      doi_tuong: rawDoiTuong,
+      di_ung: rawDiUng,
+      nhom_tuoi: mappedAge.nhom_tuoi || rawNhomTuoi || 'nguoi_lon',
+      do_tuoi: mappedAge.do_tuoi || rawDoTuoi || rawNhomTuoi || '',
+      ghi_chu_suckhoe: rawGhiChu,
+    };
+
     try {
       await saveHealthProfile(req.userId, profile);
-      return res.json({ success: true });
+      return res.json({ success: true, profile });
     } catch (error) {
       return res.status(503).json({ success: false, error: error instanceof Error ? error.message : String(error) });
     }

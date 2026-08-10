@@ -44,6 +44,52 @@ function ingredientDoses(product: Product): Map<string, number | null> {
   return result;
 }
 
+export function mapToConditionCode(inputStr: string): string {
+  const norm = normalizeText(inputStr);
+  if (!norm) return '';
+  if (norm.includes('tieu duong') || norm.includes('dai thao duong') || norm.includes('duong huyet') || norm.includes('diabetes')) {
+    return 'dai_thao_duong';
+  }
+  if (norm.includes('cao huyet ap') || norm.includes('tang huyet ap') || norm.includes('huyet ap') || norm.includes('hypertension')) {
+    return 'tang_huyet_ap_nang';
+  }
+  if (norm.includes('da day') || norm.includes('ta trang') || norm.includes('loet') || norm.includes('ulcer')) {
+    return 'loet_da_day_ta_trang';
+  }
+  return normalizeCode(inputStr);
+}
+
+export function mapToAgeGroup(inputVal: unknown): { nhom_tuoi: string | null; do_tuoi: string | null } {
+  if (inputVal === null || inputVal === undefined || inputVal === '') {
+    return { nhom_tuoi: null, do_tuoi: null };
+  }
+  const str = String(inputVal).trim();
+  const norm = normalizeText(str);
+
+  if (norm === 'nguoi_lon' || norm === 'nguoi lon' || norm === 'truong thanh' || norm === 'adult') {
+    return { nhom_tuoi: 'nguoi_lon', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
+  }
+  if (norm === 'tre_em' || norm === 'tre em' || norm === 'em be' || norm === 'be' || norm === 'child') {
+    return { nhom_tuoi: 'tre_em', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
+  }
+  if (norm === 'nguoi_cao_tuoi' || norm === 'nguoi cao tuoi' || norm === 'nguoi gia' || norm === 'elderly' || norm === 'senior') {
+    return { nhom_tuoi: 'nguoi_cao_tuoi', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
+  }
+
+  const match = str.match(/\d+/);
+  if (match) {
+    const age = parseInt(match[0], 10);
+    if (!isNaN(age)) {
+      const display = str.includes('tuổi') ? str : `${age} tuổi`;
+      if (age < 12) return { nhom_tuoi: 'tre_em', do_tuoi: display };
+      if (age >= 60) return { nhom_tuoi: 'nguoi_cao_tuoi', do_tuoi: display };
+      return { nhom_tuoi: 'nguoi_lon', do_tuoi: display };
+    }
+  }
+
+  return { nhom_tuoi: normalizeCode(str) || null, do_tuoi: str };
+}
+
 function profileValues(profile: HealthProfile | null): string[] {
   if (!profile) return [];
   const values: string[] = [];
@@ -52,13 +98,23 @@ function profileValues(profile: HealthProfile | null): string[] {
     if (Array.isArray(value)) values.push(...value.map(String));
     else if (typeof value === 'string') values.push(...value.split(/[;,]/));
   }
-  return values.map(normalizeCode).filter(Boolean);
+  const result: string[] = [];
+  for (const raw of values) {
+    const item = raw.trim();
+    if (!item) continue;
+    const mapped = mapToConditionCode(item);
+    if (mapped) result.push(mapped);
+    const code = normalizeCode(item);
+    if (code && code !== mapped) result.push(code);
+  }
+  return result;
 }
 
 function ageGroup(profile: HealthProfile | null): string | null {
   if (!profile) return null;
   const value = profile.nhom_tuoi || profile.do_tuoi;
-  return value ? normalizeCode(value) : null;
+  const mapped = mapToAgeGroup(value);
+  return mapped.nhom_tuoi;
 }
 
 export interface EvaluateSafetyInput {

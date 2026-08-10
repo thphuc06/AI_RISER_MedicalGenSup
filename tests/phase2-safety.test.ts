@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { HealthProfileConfirmationGate, TranscriptActionGate } from '../server/actionGate.js';
 import { applyCartOperation, cartDocumentId, healthProfileFromDocument, mutateCart } from '../server/cartService.js';
 import type { SafetyData } from '../server/domain.js';
-import { evaluateSafety } from '../server/safetyService.js';
+import { evaluateSafety, mapToAgeGroup, mapToConditionCode } from '../server/safetyService.js';
 import { parseSheetCsv, SheetsService, type SheetName, overrideSafetyData } from '../server/sheetsService.js';
 import { resolveAppView } from '../src/routing.js';
 
@@ -76,10 +76,12 @@ test('8. STOP_SELL prevents a cart candidate', () => {
   assert.equal(evaluateSafety({ cart: [{ sku: 'P1', quantity: 1 }], healthProfile: { nhom_tuoi: 'nguoi_lon' }, confirmedTranscript: 'khó thở', safetyData: baseData() }).verdict, 'STOP_SELL');
 });
 
-test('9. refresh failure marks data unhealthy and fails closed', async () => {
+test('9. first ever refresh failure remains fail-closed', async () => {
   const service = new SheetsService(async () => { throw new Error('network down'); });
   const status = await service.refresh();
   assert.equal(status.isHealthy, false);
+  assert.equal(status.productsCount, 0);
+  assert.equal(status.lastError, 'network down');
   assert.equal(evaluateSafety({ cart: [], healthProfile: null, confirmedTranscript: '', safetyData: service.getSafetyData() }).verdict, 'BLOCK');
 });
 
@@ -138,4 +140,66 @@ test('18. manual add does not require transcript but voice_ai add is blocked if 
   assert.equal(manualResult.success, false);
   assert.equal(manualResult.verdict, 'BLOCK');
   assert.equal(manualResult.reason, 'Vui lòng chọn nhóm tuổi trước khi thêm sản phẩm này.');
+});
+
+test('19. successful initial refresh followed by refresh abort keeps old complete cache usable and products available', async () => {
+  let failRefresh = false;
+  const csv: Record<SheetName, string> = { Products: productsCsv, Contraindications: contraCsv, Max_Dose: maxCsv, Red_Flags: redCsv };
+  const service = new SheetsService(async (name) => {
+    if (failRefresh) throw new Error('This operation was aborted');
+    return csv[name];
+  });
+
+  // Successful initial refresh
+  const status1 = await service.refresh();
+  assert.equal(status1.isHealthy, true);
+  assert.equal(status1.latestRefreshHealthy, true);
+  assert.equal(status1.productsCount, 1);
+  assert.equal(status1.lastError, null);
+  assert.notEqual(status1.lastSuccessfulRefresh, null);
+
+  // Following refresh aborts
+  failRefresh = true;
+  const status2 = await service.refresh();
+
+  // Old complete cache remains usable & products remain available
+  assert.equal(status2.isHealthy, true);
+  assert.equal(status2.latestRefreshHealthy, false);
+  assert.equal(status2.productsCount, 1);
+  assert.equal(status2.lastError, 'This operation was aborted');
+  assert.equal(service.getSafetyData().products.length, 1);
+  assert.equal(evaluateSafety({ cart: [{ sku: 'P1', quantity: 1 }], healthProfile: { nhom_tuoi: 'nguoi_lon' }, confirmedTranscript: 'sốt', safetyData: service.getSafetyData() }).verdict, 'ALLOW');
+});
+
+test('20. health profile normalizer maps Vietnamese disease terms and age inputs accurately', () => {
+  const profileWithVietnameseText = {
+    benh_nen: 'Tiểu đường, Cao huyết áp',
+    do_tuoi: '40 tuổi',
+  };
+  const dummyData: SafetyData = {
+    products: [{ sku: 'P1', ten_san_pham: 'Para A', hoat_chat: 'paracetamol', ham_luong_mg: '500 mg', dang_bao_che: 'viên', nhom: 'giảm đau', rx_status: 'OTC', gia: 1000, ton_kho: 20, chi_dinh_ngan: 'Sốt', cach_dung_co_ban: 'Dùng theo nhãn' }],
+    contraindications: [],
+    maxDoses: [{ hoat_chat: 'paracetamol', nhom_tuoi: 'nguoi_lon', max_mg_ngay: 4000 }],
+    redFlags: [],
+    isHealthy: true,
+    lastSuccessfulRefresh: new Date(),
+    lastRefreshAttempt: new Date(),
+    lastError: null,
+  };
+  const safety = evaluateSafety({
+    cart: [{ sku: 'P1', quantity: 1 }],
+    healthProfile: profileWithVietnameseText,
+    confirmedTranscript: 'nhức đầu',
+    safetyData: dummyData,
+  });
+  assert.equal(safety.verdict, 'ALLOW');
+
+  const mappedAge40 = mapToAgeGroup('40 tuổi');
+  assert.equal(mappedAge40.nhom_tuoi, 'nguoi_lon');
+
+  const mappedAge68 = mapToAgeGroup('68');
+  assert.equal(mappedAge68.nhom_tuoi, 'nguoi_cao_tuoi');
+
+  const mappedCondition = mapToConditionCode('tiểu đường');
+  assert.equal(mappedCondition, 'dai_thao_duong');
 });

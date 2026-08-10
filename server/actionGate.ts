@@ -22,7 +22,9 @@ export class HealthProfileConfirmationGate {
   private pending: PendingProfileUpdate | null = null;
   propose(update: PendingProfileUpdate) { this.pending = { ...update }; }
   confirm(text: string): PendingProfileUpdate | null {
-    if (!this.pending || !/^(xác nhận|xac nhan|đồng ý|dong y|đúng|dung|yes|confirm)[.!\s]*$/i.test(text.trim())) return null;
+    if (!this.pending) return null;
+    const trimmed = text.trim();
+    if (!/(xác nhận|xac nhan|đồng ý|dong y|đúng|dung|chính xác|chinh xac|\bok\b|\bokay\b|\byes\b|confirm|lưu|luu)/i.test(trimmed)) return null;
     const approved = this.pending;
     this.pending = null;
     return approved;

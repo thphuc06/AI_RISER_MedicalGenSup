@@ -2,7 +2,7 @@ import Papa from 'papaparse';
 import type { Contraindication, MaxDose, Product, RedFlag, SafetyData } from './domain.js';
 
 const SPREADSHEET_ID = process.env.PHARMACY_SPREADSHEET_ID || '1qDdFaMA-4KB7bqiGR-WqjfRN6xmHQtb_BQx3DZXtgak';
-const FETCH_TIMEOUT_MS = Number(process.env.SHEETS_FETCH_TIMEOUT_MS || 10_000);
+const FETCH_TIMEOUT_MS = Number(process.env.SHEETS_FETCH_TIMEOUT_MS || 30_000);
 
 type Row = Record<string, unknown>;
 export type SheetName = 'Products' | 'Contraindications' | 'Max_Dose' | 'Red_Flags';
@@ -121,16 +121,17 @@ export class SheetsService {
         isHealthy: true, isLoading: false, lastSuccessfulRefresh: new Date(), lastError: null,
       };
     } catch (error) {
-      this.state.isHealthy = false;
       this.state.isLoading = false;
       this.state.lastError = error instanceof Error ? error.message : String(error);
-      console.error('[SheetsService] Refresh failed; mutations are fail-closed:', this.state.lastError);
+      const hasCompleteCache = this.state.lastSuccessfulRefresh !== null && this.state.products.length > 0;
+      this.state.isHealthy = hasCompleteCache;
+      console.error('[SheetsService] Refresh failed:', this.state.lastError, hasCompleteCache ? '(retaining last-known-good cache)' : '(fail-closed)');
     }
     return this.getStatus();
   }
 
   getSafetyData(): SafetyData { return { ...this.state, products: [...this.state.products], contraindications: [...this.state.contraindications], maxDoses: [...this.state.maxDoses], redFlags: [...this.state.redFlags] }; }
-  getStatus() { return { productsCount: this.state.products.length, contraindicationsCount: this.state.contraindications.length, maxDosesCount: this.state.maxDoses.length, redFlagsCount: this.state.redFlags.length, filteredRxCount: this.state.filteredRxCount, lastSuccessfulRefresh: this.state.lastSuccessfulRefresh, lastRefreshAttempt: this.state.lastRefreshAttempt, isHealthy: this.state.isHealthy, isLoading: this.state.isLoading, lastError: this.state.lastError }; }
+  getStatus() { return { productsCount: this.state.products.length, contraindicationsCount: this.state.contraindications.length, maxDosesCount: this.state.maxDoses.length, redFlagsCount: this.state.redFlags.length, filteredRxCount: this.state.filteredRxCount, lastSuccessfulRefresh: this.state.lastSuccessfulRefresh, lastRefreshAttempt: this.state.lastRefreshAttempt, isHealthy: this.state.isHealthy, latestRefreshHealthy: this.state.lastError === null, isLoading: this.state.isLoading, lastError: this.state.lastError }; }
 }
 
 const service = new SheetsService();
