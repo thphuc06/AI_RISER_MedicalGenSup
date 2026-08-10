@@ -8,7 +8,7 @@ export const FIRESTORE_DATABASE_ID = process.env.FIRESTORE_DATABASE_ID || 'ai-st
 // Detect if we are running in a test suite context to provide a hermetic in-memory fallback
 const isTest = typeof process !== 'undefined' && (
   process.env.NODE_ENV === 'test' ||
-  process.argv.some(arg => arg.includes('test') || arg.includes('tsx')) ||
+  process.argv.some(arg => arg.includes('--test') || arg.includes('tests/')) ||
   'NODE_TEST_CONTEXT' in process.env
 );
 

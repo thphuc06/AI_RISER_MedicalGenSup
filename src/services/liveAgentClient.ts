@@ -15,7 +15,8 @@ export class LiveAgentClient {
   private audioCtxInput: AudioContext | null = null;
   private audioCtxOutput: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
-  private processor: ScriptProcessorNode | null = null;
+  private sourceNode: MediaStreamAudioSourceNode | null = null;
+  private workletNode: AudioWorkletNode | null = null;
   private nextPlaybackStartTime = 0;
   private isRecording = false;
   private shouldReconnect = false;
@@ -84,8 +85,8 @@ export class LiveAgentClient {
       }
     };
 
-    this.ws.onerror = (err) => {
-      console.error('[LiveAgentClient] WebSocket error:', err);
+    this.ws.onerror = (event) => {
+      console.warn('[LiveAgentClient] WebSocket connection event:', (event as Event)?.type || 'error');
     };
 
     this.ws.onclose = () => {
@@ -123,49 +124,75 @@ export class LiveAgentClient {
   public async startRecording() {
     if (this.isRecording) return;
 
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx || !AudioCtx.prototype || !('audioWorklet' in AudioCtx.prototype)) {
+      const errMsg = 'Trình duyệt không hỗ trợ AudioWorklet API cho ghi âm giọng nói.';
+      console.error('[LiveAgentClient]', errMsg);
+      this.callbacks.onError?.(errMsg);
+      return;
+    }
+
+    this.isRecording = true;
+
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
+      if (!this.isRecording) {
+        this.cleanupRecordingResources();
+        return;
+      }
+
       this.ws?.send(JSON.stringify({ type: 'audio_start' }));
 
-      // Create 16kHz AudioContext for input capture
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtxInput = new AudioCtx({ sampleRate: 16000 });
+      await this.audioCtxInput.audioWorklet.addModule('/pcm-capture-worklet.js');
 
-      const source = this.audioCtxInput.createMediaStreamSource(this.mediaStream);
-      this.processor = this.audioCtxInput.createScriptProcessor(4096, 1, 1);
+      if (!this.isRecording) {
+        this.cleanupRecordingResources();
+        return;
+      }
 
-      source.connect(this.processor);
-      this.processor.connect(this.audioCtxInput.destination);
+      this.sourceNode = this.audioCtxInput.createMediaStreamSource(this.mediaStream);
+      this.workletNode = new AudioWorkletNode(this.audioCtxInput, 'pcm-capture-worklet');
 
-      this.isRecording = true;
-
-      this.processor.onaudioprocess = (e) => {
+      this.workletNode.port.onmessage = (event: MessageEvent) => {
         if (!this.isRecording) return;
-        const inputData = e.inputBuffer.getChannelData(0);
-        const pcmBase64 = this.float32ToBase64Pcm(inputData);
+        const arrayBuffer = event.data as ArrayBuffer;
+        if (!arrayBuffer) return;
+        const float32Data = new Float32Array(arrayBuffer);
+        const pcmBase64 = this.float32ToBase64Pcm(float32Data);
 
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this.ws.send(
             JSON.stringify({
               type: 'audio_input',
               audio: pcmBase64,
+              mimeType: 'audio/pcm;rate=16000',
             })
           );
         }
       };
+
+      this.sourceNode.connect(this.workletNode);
     } catch (err: any) {
-      console.error('[LiveAgentClient] Failed to access microphone:', err);
+      console.error('[LiveAgentClient] Failed to start recording:', err);
       this.callbacks.onError?.('Không thể truy cập Microphone: ' + err.message);
+      this.stopRecording();
     }
   }
 
-  public stopRecording() {
-    this.isRecording = false;
+  private cleanupRecordingResources() {
+    if (this.workletNode) {
+      if (this.workletNode.port) {
+        this.workletNode.port.onmessage = null;
+      }
+      this.workletNode.disconnect();
+      this.workletNode = null;
+    }
 
-    if (this.processor) {
-      this.processor.disconnect();
-      this.processor = null;
+    if (this.sourceNode) {
+      this.sourceNode.disconnect();
+      this.sourceNode = null;
     }
 
     if (this.mediaStream) {
@@ -174,10 +201,20 @@ export class LiveAgentClient {
     }
 
     if (this.audioCtxInput) {
-      this.audioCtxInput.close();
+      this.audioCtxInput.close().catch(() => {});
       this.audioCtxInput = null;
     }
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'audio_end' }));
+  }
+
+  public stopRecording() {
+    const wasRecording = this.isRecording;
+    this.isRecording = false;
+
+    this.cleanupRecordingResources();
+
+    if (wasRecording && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'audio_end' }));
+    }
   }
 
   private playAudioChunk(base64Pcm24k: string) {

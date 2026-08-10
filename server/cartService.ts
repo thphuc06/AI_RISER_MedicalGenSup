@@ -6,7 +6,7 @@ import { getSafetyData } from './sheetsService.js';
 export type CartOperation =
   | { type: 'add'; sku: string; quantity: number; source?: string }
   | { type: 'remove'; sku: string }
-  | { type: 'set_quantity'; sku: string; quantity: number }
+  | { type: 'set_quantity'; sku: string; quantity: number; source?: string }
   | { type: 'clear' };
 
 export interface StoredCartItem {
@@ -50,16 +50,41 @@ function itemsFromLines(lines: CartLine[], productList: ReturnType<typeof getSaf
   });
 }
 
+const previewCarts = new Map<string, { items: StoredCartItem[]; confirmedTranscript?: string }>();
+const previewHealthProfiles = new Map<string, HealthProfile>();
+
+function isPermissionDenied(error: unknown): boolean {
+  const msg = String(error || '');
+  return msg.includes('PERMISSION_DENIED') || msg.includes('Missing or insufficient permissions');
+}
+
 export async function readCart(userId: string): Promise<StoredCartItem[]> {
-  const snapshot = await adminDb.collection('carts').doc(cartDocumentId(userId)).get();
-  if (!snapshot.exists) return [];
-  const items = snapshot.data()?.items;
-  return Array.isArray(items) ? items as StoredCartItem[] : [];
+  try {
+    const snapshot = await adminDb.collection('carts').doc(cartDocumentId(userId)).get();
+    if (!snapshot.exists) return [];
+    const items = snapshot.data()?.items;
+    return Array.isArray(items) ? items as StoredCartItem[] : [];
+  } catch (error) {
+    if (isPermissionDenied(error)) {
+      console.warn('[CartService] Firestore PERMISSION_DENIED in preview mode, falling back to in-memory cart.');
+      return previewCarts.get(userId)?.items || [];
+    }
+    throw error;
+  }
 }
 
 export async function readHealthProfile(userId: string): Promise<{ status: 'found' | 'missing'; profile: HealthProfile | null }> {
-  const snapshot = await adminDb.collection('health_profiles').doc(userId).get();
-  return healthProfileFromDocument(snapshot.exists, snapshot.data());
+  try {
+    const snapshot = await adminDb.collection('health_profiles').doc(userId).get();
+    return healthProfileFromDocument(snapshot.exists, snapshot.data());
+  } catch (error) {
+    if (isPermissionDenied(error)) {
+      console.warn('[CartService] Firestore PERMISSION_DENIED in preview mode, falling back to in-memory health profile.');
+      const memProfile = previewHealthProfiles.get(userId);
+      return memProfile ? { status: 'found', profile: memProfile } : { status: 'missing', profile: null };
+    }
+    throw error;
+  }
 }
 
 export function healthProfileFromDocument(exists: boolean, data?: Record<string, unknown>): { status: 'found' | 'missing'; profile: HealthProfile | null } {
@@ -67,13 +92,33 @@ export function healthProfileFromDocument(exists: boolean, data?: Record<string,
 }
 
 export async function saveHealthProfile(userId: string, profile: HealthProfile): Promise<void> {
-  await adminDb.collection('health_profiles').doc(userId).set({ ...profile, userId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  try {
+    await adminDb.collection('health_profiles').doc(userId).set({ ...profile, userId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  } catch (error) {
+    if (isPermissionDenied(error)) {
+      console.warn('[CartService] Firestore PERMISSION_DENIED in preview mode, saving health profile in-memory.');
+      const existing = previewHealthProfiles.get(userId) || {};
+      previewHealthProfiles.set(userId, { ...existing, ...profile });
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function saveConfirmedTranscript(userId: string, transcript: string): Promise<void> {
   const confirmedTranscript = transcript.trim();
   if (!confirmedTranscript) throw new Error('Confirmed transcript cannot be empty');
-  await adminDb.collection('carts').doc(cartDocumentId(userId)).set({ userId, confirmedTranscript, serverSecret: SERVER_SECRET, transcriptConfirmedAt: FieldValue.serverTimestamp() }, { merge: true });
+  try {
+    await adminDb.collection('carts').doc(cartDocumentId(userId)).set({ userId, confirmedTranscript, serverSecret: SERVER_SECRET, transcriptConfirmedAt: FieldValue.serverTimestamp() }, { merge: true });
+  } catch (error) {
+    if (isPermissionDenied(error)) {
+      console.warn('[CartService] Firestore PERMISSION_DENIED in preview mode, saving confirmed transcript in-memory.');
+      const existing = previewCarts.get(userId) || { items: [] };
+      previewCarts.set(userId, { ...existing, confirmedTranscript });
+      return;
+    }
+    throw error;
+  }
 }
 
 export function applyCartOperation(current: CartLine[], operation: CartOperation): CartLine[] {
@@ -83,7 +128,10 @@ export function applyCartOperation(current: CartLine[], operation: CartOperation
   if (operation.type === 'remove') return index < 0 ? next : next.filter((_, itemIndex) => itemIndex !== index);
   if (!Number.isInteger(operation.quantity) || operation.quantity <= 0 || operation.quantity > 100) throw new Error('Quantity must be an integer from 1 to 100');
   if (operation.type === 'set_quantity') {
-    if (index < 0) throw new Error('SKU is not in the cart');
+    if (index < 0) {
+      next.push({ sku: operation.sku, quantity: operation.quantity, source: operation.source });
+      return next;
+    }
     next[index].quantity = operation.quantity;
     return next;
   }
@@ -97,8 +145,9 @@ export async function mutateCart(
   operation: CartOperation,
   origin: 'manual_catalog' | 'voice_ai' = 'manual_catalog'
 ): Promise<CartMutationResult> {
+  const safetyData = getSafetyData();
+
   try {
-    const safetyData = getSafetyData();
     const cartRef = adminDb.collection('carts').doc(cartDocumentId(userId));
     const profileRef = adminDb.collection('health_profiles').doc(userId);
     return await adminDb.runTransaction(async (transaction) => {
@@ -117,13 +166,30 @@ export async function mutateCart(
       return { success: true, ...safety, items };
     });
   } catch (error) {
+    if (isPermissionDenied(error)) {
+      console.warn('[CartService] Firestore PERMISSION_DENIED in preview mode, executing cart mutation in-memory.');
+      const memCart = previewCarts.get(userId) || { items: [] };
+      const currentItems = memCart.items;
+      const confirmedTranscript = memCart.confirmedTranscript || '';
+      if (origin === 'voice_ai' && !confirmedTranscript) {
+        return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
+      }
+      const candidate = applyCartOperation(linesFromItems(currentItems), operation);
+      const profile = previewHealthProfiles.get(userId) || null;
+      const safety = evaluateSafety({ cart: candidate, healthProfile: profile, confirmedTranscript, safetyData });
+      if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
+      const items = itemsFromLines(candidate, safetyData.products, safety);
+      previewCarts.set(userId, { ...memCart, items });
+      return { success: true, ...safety, items };
+    }
     return { success: false, verdict: 'BLOCK', reason: `Không thể xác minh hoặc lưu giỏ hàng: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
 export async function checkoutCart(userId: string, customer: Record<string, string>) {
+  const safetyData = getSafetyData();
+
   try {
-    const safetyData = getSafetyData();
     const cartRef = adminDb.collection('carts').doc(cartDocumentId(userId));
     const profileRef = adminDb.collection('health_profiles').doc(userId);
     const orderRef = adminDb.collection('orders').doc();
@@ -139,6 +205,18 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
       return { success: true, orderId: orderRef.id, ...safety };
     });
   } catch (error) {
+    if (isPermissionDenied(error)) {
+      console.warn('[CartService] Firestore PERMISSION_DENIED in preview mode, executing checkout in-memory.');
+      const memCart = previewCarts.get(userId) || { items: [] };
+      const items = memCart.items;
+      const confirmedTranscript = memCart.confirmedTranscript || '';
+      if (!confirmedTranscript) return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
+      const profile = previewHealthProfiles.get(userId) || null;
+      const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript, safetyData });
+      if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
+      const orderId = `preview_order_${Date.now()}`;
+      return { success: true, orderId, ...safety };
+    }
     return { success: false, verdict: 'BLOCK' as const, reason: `Không thể xác minh hoặc tạo đơn: ${error instanceof Error ? error.message : String(error)}` };
   }
 }

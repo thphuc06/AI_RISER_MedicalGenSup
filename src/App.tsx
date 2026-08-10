@@ -30,6 +30,10 @@ export default function App() {
   const fetchOrders = async () => {
     try {
       const res = await fetch('/api/orders');
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error(`HTTP ${res.status}: Non-JSON response`);
+      }
       const data = await res.json();
       if (data.success && data.orders && data.orders.length > 0) {
         setOrders(data.orders);
