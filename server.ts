@@ -82,8 +82,9 @@ async function startServer() {
 
   app.post('/api/cart/mutate', requireFirebaseUser, async (req: AuthenticatedRequest, res) => {
     const operation = req.body?.operation as CartOperation | undefined;
+    const origin = req.body?.origin as 'manual_catalog' | 'voice_ai' | undefined;
     if (!req.userId || !operation || !['add', 'remove', 'set_quantity', 'clear'].includes(operation.type)) return res.status(400).json({ success: false, error: 'Invalid cart mutation' });
-    const result = await mutateCart(req.userId, operation);
+    const result = await mutateCart(req.userId, operation, origin || 'manual_catalog');
     return res.status(result.success ? 200 : 409).json(result);
   });
 
@@ -156,10 +157,11 @@ async function startServer() {
       if (!order || !order.id) {
         return res.status(400).json({ success: false, error: 'Dữ liệu đơn hàng không hợp lệ' });
       }
-      const { adminDb, FieldValue } = await import('./server/firebaseAdmin.js');
+      const { adminDb, FieldValue, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
       const docId = order.id.replace('#', '');
       await adminDb.collection('orders').doc(docId).set({
         ...order,
+        serverSecret: SERVER_SECRET,
         createdAt: FieldValue.serverTimestamp(),
       });
       return res.json({ success: true });
@@ -171,10 +173,11 @@ async function startServer() {
   app.post('/api/orders/:id/approve', async (req, res) => {
     try {
       const { id } = req.params;
-      const { adminDb } = await import('./server/firebaseAdmin.js');
+      const { adminDb, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
       const docId = id.replace('#', '');
       await adminDb.collection('orders').doc(docId).update({
         status: 'approved',
+        serverSecret: SERVER_SECRET,
       });
       return res.json({ success: true });
     } catch (error) {
@@ -185,11 +188,12 @@ async function startServer() {
   app.post('/api/orders/:id/cancel-and-call', async (req, res) => {
     try {
       const { id } = req.params;
-      const { adminDb } = await import('./server/firebaseAdmin.js');
+      const { adminDb, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
       const docId = id.replace('#', '');
       await adminDb.collection('orders').doc(docId).update({
         status: 'calling',
         priority: 'Cần gọi',
+        serverSecret: SERVER_SECRET,
       });
       return res.json({ success: true });
     } catch (error) {
@@ -201,10 +205,11 @@ async function startServer() {
     try {
       const { id } = req.params;
       const { items } = req.body;
-      const { adminDb } = await import('./server/firebaseAdmin.js');
+      const { adminDb, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
       const docId = id.replace('#', '');
       await adminDb.collection('orders').doc(docId).update({
         items,
+        serverSecret: SERVER_SECRET,
       });
       return res.json({ success: true });
     } catch (error) {

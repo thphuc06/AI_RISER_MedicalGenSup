@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HealthProfileConfirmationGate, TranscriptActionGate } from '../server/actionGate.js';
-import { applyCartOperation, cartDocumentId, healthProfileFromDocument } from '../server/cartService.js';
+import { applyCartOperation, cartDocumentId, healthProfileFromDocument, mutateCart } from '../server/cartService.js';
 import type { SafetyData } from '../server/domain.js';
 import { evaluateSafety } from '../server/safetyService.js';
-import { parseSheetCsv, SheetsService, type SheetName } from '../server/sheetsService.js';
+import { parseSheetCsv, SheetsService, type SheetName, overrideSafetyData } from '../server/sheetsService.js';
 import { resolveAppView } from '../src/routing.js';
 
 const productsCsv = `sku,ten_san_pham,hoat_chat,ham_luong_mg,dang_bao_che,nhom,rx_status,gia,ton_kho,chi_dinh_ngan,cach_dung_co_ban
@@ -119,3 +119,23 @@ test('15. missing health profile is empty/unknown, never fabricated', () => {
 
 test('16. root route resolves to customer UI', () => assert.equal(resolveAppView('/'), 'customer'));
 test('17. pharmacist route resolves directly on refresh', () => assert.equal(resolveAppView('/duoc-si'), 'pharmacist'));
+
+test('18. manual add does not require transcript but voice_ai add is blocked if not confirmed', async () => {
+  overrideSafetyData(baseData());
+  const userId = 'test_user_' + Date.now();
+  
+  // 1. voice_ai add should fail / return BLOCK because there is no confirmedTranscript in the cart document yet
+  const voiceResult = await mutateCart(userId, { type: 'add', sku: 'P1', quantity: 1 }, 'voice_ai');
+  assert.equal(voiceResult.success, false);
+  assert.equal(voiceResult.verdict, 'BLOCK');
+  assert.match(voiceResult.reason || '', /Chưa có transcript được server xác nhận/);
+
+  // 2. manual_catalog add should proceed to evaluate safety.
+  // Since we don't have a health profile (and thus no nhom_tuoi), adding 'P1' (paracetamol) which has max dose rules
+  // will fail with the safety rule "Vui lòng chọn nhóm tuổi trước khi thêm sản phẩm này."
+  // but NOT with "Chưa có transcript được server xác nhận."
+  const manualResult = await mutateCart(userId, { type: 'add', sku: 'P1', quantity: 1 }, 'manual_catalog');
+  assert.equal(manualResult.success, false);
+  assert.equal(manualResult.verdict, 'BLOCK');
+  assert.equal(manualResult.reason, 'Vui lòng chọn nhóm tuổi trước khi thêm sản phẩm này.');
+});

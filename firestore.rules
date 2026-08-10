@@ -21,7 +21,7 @@ service cloud.firestore {
     }
     match /orders/{orderId} {
       allow get: if (signedIn() && (resource.data.userId == request.auth.uid || isPharmacist())) || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC') || resource == null;
-      allow list: if signedIn() && (resource.data.userId == request.auth.uid || isPharmacist());
+      allow list: if (signedIn() && (resource.data.userId == request.auth.uid || isPharmacist())) || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC');
       allow create, update: if hasServerSecret(request.resource.data);
       allow delete: if hasServerSecret(resource.data);
     }

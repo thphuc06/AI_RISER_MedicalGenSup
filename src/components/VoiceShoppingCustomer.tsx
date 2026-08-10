@@ -87,7 +87,8 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         }, 2000);
       },
       onError: (err) => {
-        setStatusMessage(`Lỗi: ${err}`);
+        setStatusMessage(`Trợ lý thoại tạm dừng (Hết quota/Lỗi). Bạn vẫn có thể mua sắm thủ công ở tab Danh mục.`);
+        setIsConnected(false);
       },
     }, () => user.getIdToken());
 
@@ -200,7 +201,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         sku: prod.sku,
         quantity: 1,
         source: 'Chọn từ danh mục'
-      });
+      }, 'manual_catalog');
       setNotification(`🛒 Đã thêm ${prod.ten_san_pham} vào giỏ hàng`);
       setTimeout(() => setNotification(null), 3000);
     } catch (err) {

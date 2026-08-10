@@ -150,3 +150,6 @@ export const getSafetyData = () => service.getSafetyData();
 export const getValidConditions = () => Array.from(new Set(service.getSafetyData().contraindications.map((item) => item.dieu_kien.trim().toLowerCase()).filter(Boolean)));
 export const getValidAgeGroups = () => Array.from(new Set(service.getSafetyData().maxDoses.map((item) => item.nhom_tuoi.trim().toLowerCase()).filter(Boolean)));
 export const getCacheStatus = () => service.getStatus();
+export function overrideSafetyData(data: any): void {
+  (service as any).state = { ...data };
+}

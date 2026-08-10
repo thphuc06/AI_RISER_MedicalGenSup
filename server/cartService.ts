@@ -92,7 +92,11 @@ export function applyCartOperation(current: CartLine[], operation: CartOperation
   return next;
 }
 
-export async function mutateCart(userId: string, operation: CartOperation): Promise<CartMutationResult> {
+export async function mutateCart(
+  userId: string,
+  operation: CartOperation,
+  origin: 'manual_catalog' | 'voice_ai' = 'manual_catalog'
+): Promise<CartMutationResult> {
   try {
     const safetyData = getSafetyData();
     const cartRef = adminDb.collection('carts').doc(cartDocumentId(userId));
@@ -101,7 +105,9 @@ export async function mutateCart(userId: string, operation: CartOperation): Prom
       const [cartSnapshot, profileSnapshot] = await Promise.all([transaction.get(cartRef), transaction.get(profileRef)]);
       const currentItems = cartSnapshot.exists && Array.isArray(cartSnapshot.data()?.items) ? cartSnapshot.data()?.items as StoredCartItem[] : [];
       const confirmedTranscript = cartSnapshot.exists ? String(cartSnapshot.data()?.confirmedTranscript || '') : '';
-      if (!confirmedTranscript) return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
+      if (origin === 'voice_ai' && !confirmedTranscript) {
+        return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
+      }
       const candidate = applyCartOperation(linesFromItems(currentItems), operation);
       const profile = profileSnapshot.exists ? profileSnapshot.data() as HealthProfile : null;
       const safety = evaluateSafety({ cart: candidate, healthProfile: profile, confirmedTranscript, safetyData });

@@ -42,8 +42,8 @@ async function postAuthenticated(user: User, url: string, body: unknown) {
   return result;
 }
 
-export const mutateServerCart = (user: User, operation: CartOperation) =>
-  postAuthenticated(user, '/api/cart/mutate', { operation });
+export const mutateServerCart = (user: User, operation: CartOperation, origin: 'manual_catalog' | 'voice_ai' = 'manual_catalog') =>
+  postAuthenticated(user, '/api/cart/mutate', { operation, origin });
 
 export const checkoutServerCart = (user: User, customer: { name: string; phone: string; address: string }) =>
   postAuthenticated(user, '/api/cart/checkout', { customer });

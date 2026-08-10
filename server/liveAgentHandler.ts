@@ -144,12 +144,12 @@ Chỉ gọi công cụ thay đổi trạng thái sau khi server báo transcript 
             const reason = String(args.ly_do_va_bang_chung || '').trim();
             if (!reason) result = { success: false, message: 'Thiếu lý do và bằng chứng.' };
             else {
-              const cartResult = await mutateCart(userId, { type: 'add', sku: String(args.sku || ''), quantity: Number(args.so_luong), source: reason });
+              const cartResult = await mutateCart(userId, { type: 'add', sku: String(args.sku || ''), quantity: Number(args.so_luong), source: reason }, 'voice_ai');
               result = cartResult;
               if (cartResult.success) safeSend({ type: 'cart_action', action: 'refresh', verdict: cartResult.verdict, warning: cartResult.reason });
             }
           } else if (name === 'remove_from_cart') {
-            const cartResult = await mutateCart(userId, { type: 'remove', sku: String(args.sku || '') });
+            const cartResult = await mutateCart(userId, { type: 'remove', sku: String(args.sku || '') }, 'voice_ai');
             result = cartResult;
             if (cartResult.success) safeSend({ type: 'cart_action', action: 'refresh', verdict: cartResult.verdict, warning: cartResult.reason });
           } else if (name === 'escalate_to_pharmacist') {

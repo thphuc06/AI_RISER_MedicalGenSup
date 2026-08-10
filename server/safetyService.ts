@@ -147,7 +147,7 @@ export function evaluateSafety(input: EvaluateSafetyInput): SafetyResult {
   for (const [ingredient, total] of totals) {
     const ingredientRules = safetyData.maxDoses.filter((rule) => normalizeText(rule.hoat_chat) === ingredient);
     if (ingredientRules.length === 0) continue;
-    if (!group) return { verdict: 'BLOCK', reason: `Thiếu nhóm tuổi để kiểm tra liều tối đa của ${ingredient}.` };
+    if (!group) return { verdict: 'BLOCK', reason: `Vui lòng chọn nhóm tuổi trước khi thêm sản phẩm này.` };
     const rule = ingredientRules.find((candidate) => normalizeCode(candidate.nhom_tuoi) === group);
     if (!rule) return { verdict: 'BLOCK', reason: `Không có quy tắc liều ${ingredient} cho nhóm tuổi ${group}.` };
     if (total > rule.max_mg_ngay) {
