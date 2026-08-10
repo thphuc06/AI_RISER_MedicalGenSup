@@ -34,6 +34,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
   const [notification, setNotification] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [showDomainErrorHelp, setShowDomainErrorHelp] = useState(false);
+  const [showPopupBlockedHelp, setShowPopupBlockedHelp] = useState(false);
 
   // Health Profile State
   const [healthProfile, setHealthProfile] = useState<HealthProfile>({});
@@ -121,7 +122,8 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
             if (isDomainError) {
               setShowDomainErrorHelp(true);
             }
-            setStatusMessage('Vui lòng đăng nhập để sử dụng tư vấn và giỏ hàng.');
+            setStatusMessage(err.message || 'Vui lòng kích hoạt Anonymous Auth trong Firebase Console.');
+            setNotification(err.message || 'Lỗi xác thực người dùng.');
           });
       }
     });
@@ -412,6 +414,68 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     );
   };
 
+  const renderPopupBlockedHelp = () => {
+    if (!showPopupBlockedHelp) return null;
+    return (
+      <div className="mx-4 my-2 p-3.5 bg-rose-50 border border-rose-300 rounded-xl space-y-3 shadow-xs text-xs text-rose-950 leading-relaxed text-left">
+        <div className="flex items-start gap-2">
+          <span className="material-symbols-outlined text-rose-700 text-lg shrink-0 mt-0.5">warning</span>
+          <div>
+            <h4 className="font-bold text-rose-800 text-sm">Cửa sổ đăng nhập bị chặn (Popup Blocked)</h4>
+            <p className="mt-1">
+              Trình duyệt đã chặn cửa sổ đăng nhập Google. Đây là cơ chế bảo mật tiêu chuẩn khi app chạy bên trong khung iFrame (như trên Google AI Studio).
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white border border-rose-200 rounded-lg p-2.5 space-y-2 text-gray-800 text-[11px]">
+          <p className="font-semibold text-rose-950">Cách khắc phục:</p>
+          <ul className="list-disc pl-4 space-y-1">
+            <li>Nhấn nút <strong>"Mở ứng dụng ở Tab riêng / New Tab"</strong> ở trên thanh công cụ AI Studio để chạy app trực tiếp, tránh rào cản iFrame.</li>
+            <li>Hoặc bật quyền cho phép cửa sổ bật lên (Popups & Redirects) cho trang web này trong cài đặt trình duyệt rồi nhấn <strong>Đăng nhập</strong> để thử lại.</li>
+          </ul>
+        </div>
+
+        <div className="pt-1 flex">
+          <button
+            type="button"
+            onClick={() => setShowPopupBlockedHelp(false)}
+            className="w-full py-1.5 px-3 bg-rose-700 text-white font-bold rounded-lg hover:bg-rose-800 transition-colors shadow-2xs text-[11px]"
+          >
+            Tôi đã hiểu, ẩn đi
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAuthErrorHelp = () => {
+    if (user) return null;
+    return (
+      <div className="mx-4 my-2 p-3.5 bg-rose-50 border border-rose-300 rounded-xl space-y-3 shadow-xs text-xs text-rose-950 leading-relaxed text-left">
+        <div className="flex items-start gap-2">
+          <span className="material-symbols-outlined text-rose-700 text-lg shrink-0 mt-0.5">lock_open</span>
+          <div>
+            <h4 className="font-bold text-rose-800 text-sm">Chưa kích hoạt Anonymous Auth</h4>
+            <p className="mt-1">
+              Ứng dụng yêu cầu <strong>Đăng nhập ẩn danh (Anonymous Auth)</strong> được bật trong Firebase để tạo phiên làm việc bảo mật và quản lý giỏ hàng/giọng nói.
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white border border-rose-200 rounded-lg p-2.5 space-y-1.5 text-gray-800 text-[11px]">
+          <p className="font-semibold text-rose-950">Cách khắc phục:</p>
+          <ol className="list-decimal pl-4 space-y-1">
+            <li>Truy cập <strong>Firebase Console</strong> dự án của bạn.</li>
+            <li>Chọn <strong>Build &gt; Authentication &gt; Sign-in method</strong>.</li>
+            <li>Bật (Enable) nhà cung cấp <strong>Anonymous</strong> rồi lưu lại.</li>
+            <li>Tải lại trang web này.</li>
+          </ol>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="bg-background text-on-background font-body-md antialiased overflow-hidden flex flex-col h-full w-full relative max-w-md mx-auto border-x border-[#bdc9c5] shadow-2xl">
       {/* TopAppBar */}
@@ -451,6 +515,8 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
               </p>
 
               {renderDomainErrorHelp()}
+              {renderPopupBlockedHelp()}
+              {renderAuthErrorHelp()}
 
               {/* Patient Health Profile Summary Badge on Home Screen */}
               <div className="w-full max-w-sm mb-2 p-2.5 bg-emerald-50/90 border border-emerald-200 rounded-xl shadow-xs text-xs flex items-center justify-between gap-2">
@@ -938,6 +1004,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   onClick={async (e) => {
                     e.preventDefault();
                     try {
+                      setShowPopupBlockedHelp(false);
                       await signInWithGoogle();
                       setNotification('👋 Đăng nhập thành công với Google!');
                       setTimeout(() => setNotification(null), 3000);
@@ -947,7 +1014,13 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                       if (isDomainError) {
                         setShowDomainErrorHelp(true);
                       }
-                      setNotification(`Lỗi đăng nhập: ${err.message || err}`);
+                      const isPopupBlocked = err.code === 'auth/popup-blocked' || err.message?.includes('popup-blocked') || String(err).includes('popup-blocked');
+                      if (isPopupBlocked) {
+                        setShowPopupBlockedHelp(true);
+                        setNotification('⚠️ Trình duyệt chặn Popup. Vui lòng xem hướng dẫn bên dưới.');
+                      } else {
+                        setNotification(`Lỗi đăng nhập: ${err.message || err}`);
+                      }
                       setTimeout(() => setNotification(null), 5000);
                     }
                   }}

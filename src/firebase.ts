@@ -14,26 +14,8 @@ export const db = firebaseConfig.firestoreDatabaseId
 
 export const signInWithGoogle = async () => {
   try {
-    if (auth.currentUser?.isAnonymous) {
-      try {
-        const result = await linkWithPopup(auth.currentUser, googleProvider);
-        return result.user;
-      } catch (linkError: any) {
-        console.warn('Linking failed, falling back to direct sign-in:', linkError);
-        if (
-          linkError.code === 'auth/credential-already-in-use' ||
-          linkError.code === 'auth/email-already-in-use' ||
-          linkError.code === 'auth/provider-already-linked'
-        ) {
-          const result = await signInWithPopup(auth, googleProvider);
-          return result.user;
-        }
-        throw linkError;
-      }
-    } else {
-      const result = await signInWithPopup(auth, googleProvider);
-      return result.user;
-    }
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
   } catch (error) {
     console.error('Google Auth Error:', error);
     throw error;
@@ -42,32 +24,16 @@ export const signInWithGoogle = async () => {
 
 export const logoutUser = () => signOut(auth);
 
-const makeMockIdToken = (uid: string) => {
-  try {
-    const header = btoa(JSON.stringify({ alg: 'none', typ: 'JWT' }))
-      .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-    const payload = btoa(JSON.stringify({ sub: uid, email: 'demo@example.com', name: 'Khách hàng Demo' }))
-      .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-    return `${header}.${payload}.signature`;
-  } catch (err) {
-    return 'mock.token.sig';
-  }
-};
-
 export const ensureAuthenticatedUser = async (): Promise<any> => {
   if (auth.currentUser) return auth.currentUser;
   try {
     const result = await signInAnonymously(auth);
     return result.user;
-  } catch (err) {
-    console.warn('Anonymous Auth is disabled/restricted. Falling back to Mock Demo Session:', err);
-    return {
-      uid: 'demo_local_user',
-      isAnonymous: true,
-      displayName: 'Khách hàng Demo',
-      email: null,
-      getIdToken: async () => makeMockIdToken('demo_local_user'),
-    };
+  } catch (err: any) {
+    console.error('Anonymous Auth failed:', err);
+    throw new Error(
+      'Anonymous Auth (Đăng nhập ẩn danh) chưa được bật hoặc bị lỗi. Vui lòng kích hoạt Anonymous Sign-In Provider trong Firebase Console.'
+    );
   }
 };
 
