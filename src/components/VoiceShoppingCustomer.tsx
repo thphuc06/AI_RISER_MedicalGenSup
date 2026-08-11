@@ -10,8 +10,50 @@ import {
   HealthProfile,
 } from '../services/healthProfileService';
 import { auth, ensureAuthenticatedUser, signInWithGoogle, logoutUser } from '../firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
 import { LiveAgentClient } from '../services/liveAgentClient';
+import { formatConditionToVietnamese, formatAgeDisplay } from '../utils/formatters';
+
+export function cleanAccumulatedTranscript(text: string): string {
+  let cleaned = text;
+
+  // 1. Remove completed call/response blocks with brace matching
+  const pattern = /(?:call|response):[a-zA-Z0-9_]+\s*\{/g;
+  let match;
+
+  while ((match = pattern.exec(cleaned)) !== null) {
+    const startIndex = match.index;
+    let braceCount = 0;
+    let endIndex = -1;
+
+    for (let i = startIndex; i < cleaned.length; i++) {
+      if (cleaned[i] === '{') {
+        braceCount++;
+      } else if (cleaned[i] === '}') {
+        braceCount--;
+        if (braceCount === 0) {
+          endIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (endIndex !== -1) {
+      cleaned = cleaned.slice(0, startIndex) + cleaned.slice(endIndex + 1);
+      pattern.lastIndex = 0; // Reset regex index since string was modified
+    } else {
+      // Incomplete block, strip everything from startIndex to the end of the string
+      cleaned = cleaned.slice(0, startIndex);
+      break;
+    }
+  }
+
+  // 2. Remove any trailing/incomplete call: or response: prefixes that haven't even opened a brace yet
+  const incompletePattern = /(?:call|response):[a-zA-Z0-9_]*$/i;
+  cleaned = cleaned.replace(incompletePattern, '');
+
+  return cleaned.trim();
+}
 
 interface VoiceShoppingCustomerProps {
   onSendOrderToPharmacist?: (cartItems: CartItem[], transcript: string) => void;
@@ -42,6 +84,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
   const [profileSavedMsg, setProfileSavedMsg] = useState(false);
 
   const clientRef = useRef<LiveAgentClient | null>(null);
+  const rawAiResponseRef = useRef<string>('');
 
   // Cart items state initialized empty by default
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
@@ -59,7 +102,8 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         setStatusMessage('👉 Đã nhận diện câu nói: "' + text + '" - Dược sĩ AI đang xử lý tự động...');
       },
       onOutputTranscript: (text) => {
-        setAiResponseText((prev) => (prev ? prev + ' ' + text : text));
+        rawAiResponseRef.current = rawAiResponseRef.current ? rawAiResponseRef.current + ' ' + text : text;
+        setAiResponseText(cleanAccumulatedTranscript(rawAiResponseRef.current));
       },
       onCartAction: (_action, reason) => {
         setNotification(reason ? `Giỏ hàng đã được kiểm tra: ${reason}` : 'Giỏ hàng đã được cập nhật an toàn.');
@@ -77,8 +121,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
           ...prev,
           [truong]: gia_tri,
         }));
-        const fieldLabel = truong === 'benh_nen' ? 'Bệnh nền' : truong === 'di_ung' ? 'Dị ứng' : truong === 'do_tuoi' ? 'Độ tuổi' : 'Ghi chú';
-        setNotification(`📋 Dược sĩ AI vừa tự động ghi nhận hồ sơ: ${fieldLabel} → "${gia_tri}"`);
+        const fieldLabel = truong === 'benh_nen' ? 'Bệnh nền' : truong === 'di_ung' ? 'Dị ứng' : (truong === 'do_tuoi' || truong === 'nhom_tuoi' || truong === 'age') ? 'Độ tuổi' : 'Ghi chú';
+        const displayVal = (truong === 'do_tuoi' || truong === 'nhom_tuoi' || truong === 'age') ? formatAgeDisplay(gia_tri) : formatConditionToVietnamese(gia_tri);
+        setNotification(`📋 Dược sĩ AI vừa tự động ghi nhận hồ sơ: ${fieldLabel} → "${displayVal}"`);
         setTimeout(() => setNotification(null), 5000);
       },
       onEscalate: (reason) => {
@@ -88,6 +133,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         }, 2000);
       },
       onInterrupted: () => {
+        rawAiResponseRef.current = '';
         setAiResponseText('');
         setStatusMessage('⏹️ AI đã bị ngắt câu trả lời.');
       },
@@ -154,6 +200,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
       .then((profile) => {
         if (profile) {
           setHealthProfile(profile);
+          if (profile.ho_ten) {
+            setCustomerName(profile.ho_ten);
+          }
         }
       })
       .catch((err) => console.warn('Initial server health profile fetch failed, relying on Firestore:', err));
@@ -170,6 +219,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     const unsubscribeHealth = subscribeToHealthProfile(user.uid, (profile) => {
       if (profile) {
         setHealthProfile(profile);
+        if (profile.ho_ten) {
+          setCustomerName(profile.ho_ten);
+        }
       }
     }, (err) => {
       console.warn('Firestore health profile subscription failed, using REST fallback only.', err);
@@ -187,12 +239,18 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
   
   const [myOrders, setMyOrders] = useState<any[]>([]);
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
+  const [prescFilter, setPrescFilter] = useState<'all' | 'cho_duyet' | 'duoc_duyet' | 'da_huy' | 'da_thanh_toan'>('all');
 
   const fetchMyOrders = async () => {
     if (!user) return;
     setIsLoadingOrders(true);
     try {
-      const res = await fetch('/api/my-orders');
+      const token = await user.getIdToken();
+      const res = await fetch('/api/my-orders', {
+        headers: {
+          authorization: `Bearer ${token}`
+        }
+      });
       const data = await res.json();
       if (data.success) {
         setMyOrders(data.orders || []);
@@ -304,6 +362,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
   const handleSelectPreset = async (preset: VoicePreset) => {
     setActivePreset(preset);
     setTranscript(preset.transcript);
+    rawAiResponseRef.current = '';
     setAiResponseText('');
   };
 
@@ -311,6 +370,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     if (clientRef.current) {
       clientRef.current.stopAudioOutput();
     }
+    rawAiResponseRef.current = '';
     setAiResponseText('');
     setStatusMessage('⏹️ Đã dừng Dược sĩ AI phát âm thanh.');
     setNotification('🔇 Đã tắt âm thanh Dược sĩ AI');
@@ -324,6 +384,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     }
     setIsListening(false);
     setTranscript('');
+    rawAiResponseRef.current = '';
     setAiResponseText('');
     setStatusMessage('🧹 Đã xóa cuộc hội thoại. Hãy bấm nút mic để bắt đầu mới.');
     setNotification('🧹 Đã xóa nội dung cuộc hội thoại');
@@ -340,6 +401,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
       return;
     }
 
+    rawAiResponseRef.current = '';
     setAiResponseText('');
     if (clientRef.current) {
       clientRef.current.prepareAudioOutput();
@@ -355,6 +417,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
   const handleStartMic = async () => {
     if (!clientRef.current) return;
     setIsListening(true);
+    rawAiResponseRef.current = '';
     setAiResponseText('');
     setStatusMessage('🎙️ Đang lắng nghe... Hãy nói triệu chứng của bạn');
     await clientRef.current.startRecording();
@@ -434,7 +497,21 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     setProfileErrorMsg(null);
     try {
       if (!user) throw new Error('Vui lòng đăng nhập trước khi lưu hồ sơ.');
-      await saveHealthProfile(user, healthProfile);
+      const profileToSave = {
+        ...healthProfile,
+        ho_ten: customerName,
+      };
+      await saveHealthProfile(user, profileToSave);
+      setHealthProfile(profileToSave);
+
+      if (auth.currentUser && customerName) {
+        try {
+          await updateProfile(auth.currentUser, { displayName: customerName });
+        } catch (authErr) {
+          console.warn('Could not update Firebase Auth displayName:', authErr);
+        }
+      }
+
       setProfileSavedMsg(true);
       setTimeout(() => setProfileSavedMsg(false), 3000);
     } catch (err: any) {
@@ -445,13 +522,14 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     }
   };
 
-  const handleAddQuickTag = (type: 'benh_nen' | 'di_ung' | 'do_tuoi', tag: string) => {
+  const handleAddQuickTag = (type: 'benh_nen' | 'di_ung' | 'do_tuoi' | 'thuoc_dang_dung', tag: string) => {
     setHealthProfile((prev) => {
       if (type === 'do_tuoi') {
         return { ...prev, do_tuoi: tag, nhom_tuoi: tag };
       }
-      const currentVal = prev[type] || '';
-      if (currentVal.toLowerCase().includes(tag.toLowerCase())) return prev;
+      const rawVal = prev[type as keyof HealthProfile];
+      const currentVal = Array.isArray(rawVal) ? rawVal.join(', ') : (rawVal || '');
+      if (String(currentVal).toLowerCase().includes(tag.toLowerCase())) return prev;
       const newVal = currentVal ? `${currentVal}, ${tag}` : tag;
       return { ...prev, [type]: newVal };
     });
@@ -632,10 +710,10 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   <span className="material-symbols-outlined text-emerald-700 text-lg shrink-0">medical_information</span>
                   <div className="truncate">
                     <p className="font-bold text-emerald-900 truncate">
-                      Hồ sơ AI theo dõi: <span className="font-normal text-emerald-800">{healthProfile.benh_nen || 'Chưa có bệnh nền'}</span>
+                      Hồ sơ AI theo dõi: <span className="font-semibold text-emerald-800">{formatConditionToVietnamese(healthProfile.benh_nen) || 'Chưa có bệnh nền'}</span>
                     </p>
                     <p className="text-[11px] text-emerald-700 truncate">
-                      Dị ứng: <span className="font-medium text-red-600">{healthProfile.di_ung || 'Chưa ghi nhận'}</span> | Nhóm tuổi: {healthProfile.nhom_tuoi || healthProfile.do_tuoi || 'Chưa xác định'}
+                      Dị ứng: <span className="font-bold text-red-600">{formatConditionToVietnamese(healthProfile.di_ung) || 'Chưa ghi nhận'}</span> | Tuổi: <span className="font-bold text-emerald-900">{formatAgeDisplay(healthProfile.do_tuoi, healthProfile.nhom_tuoi)}</span>
                     </p>
                   </div>
                 </div>
@@ -1051,7 +1129,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
 
         {/* Prescriptions Tab */}
         {activeTab === 'prescriptions' && (
-          <div className="p-4 max-w-sm mx-auto space-y-4 pb-16">
+          <div className="p-4 max-w-sm mx-auto space-y-4 pb-16 animate-fade-in">
             <div className="flex justify-between items-center">
               <h2 className="text-lg font-bold text-[#00685c]">Đơn thuốc & Lịch sử</h2>
               <button
@@ -1062,6 +1140,48 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 <span className={`material-symbols-outlined text-xs ${isLoadingOrders ? 'animate-spin' : ''}`}>refresh</span>
                 Làm mới
               </button>
+            </div>
+
+            {/* Status Tabs/Pills */}
+            <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none border-b border-gray-100 -mx-1 px-1">
+              {[
+                { id: 'all', label: 'Tất cả' },
+                { id: 'cho_duyet', label: 'Chờ duyệt' },
+                { id: 'duoc_duyet', label: 'Đã duyệt' },
+                { id: 'da_huy', label: 'Đã hủy' },
+                { id: 'da_thanh_toan', label: 'Đã thanh toán' },
+              ].map((tab) => {
+                const count = myOrders.filter((order) => {
+                  const isPending = order.status === 'cho_duyet' || order.status === 'pending';
+                  const isApproved = order.status === 'duoc_duyet' || order.status === 'approved';
+                  const isPaid = order.status === 'da_thanh_toan';
+                  const isCancelled = order.status === 'da_huy' || order.status === 'rejected';
+
+                  if (tab.id === 'all') return true;
+                  if (tab.id === 'cho_duyet') return isPending;
+                  if (tab.id === 'duoc_duyet') return isApproved;
+                  if (tab.id === 'da_huy') return isCancelled;
+                  if (tab.id === 'da_thanh_toan') return isPaid;
+                  return false;
+                }).length;
+
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setPrescFilter(tab.id as any)}
+                    className={`px-2.5 py-1.5 rounded-full text-[10px] font-bold shrink-0 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1 ${
+                      prescFilter === tab.id
+                        ? 'bg-[#00685c] text-white'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span className={`text-[9px] px-1 py-0.2 rounded-full ${prescFilter === tab.id ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             {isLoadingOrders && myOrders.length === 0 ? (
@@ -1076,117 +1196,149 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   Đơn thuốc của bạn sau khi gửi yêu cầu duyệt sẽ hiển thị tại đây để bạn theo dõi và thanh toán.
                 </p>
               </div>
-            ) : (
-              <div className="space-y-3.5">
-                {myOrders.map((order) => {
-                  const items = order.items || [];
-                  const isPending = order.status === 'cho_duyet' || order.status === 'pending';
-                  const isApproved = order.status === 'duoc_duyet' || order.status === 'approved';
-                  const isPaid = order.status === 'da_thanh_toan';
-                  const isCancelled = order.status === 'da_huy' || order.status === 'rejected';
+            ) : (() => {
+              const filteredOrders = myOrders.filter((order) => {
+                const isPending = order.status === 'cho_duyet' || order.status === 'pending';
+                const isApproved = order.status === 'duoc_duyet' || order.status === 'approved';
+                const isPaid = order.status === 'da_thanh_toan';
+                const isCancelled = order.status === 'da_huy' || order.status === 'rejected';
 
-                  return (
-                    <div key={order.id} className="bg-white border border-[#bdc9c5] rounded-xl p-4 shadow-xs space-y-3 transition-all hover:shadow-md">
-                      <div className="flex justify-between items-center border-b pb-2 border-slate-100">
-                        <span className="font-bold text-xs text-gray-400">#{order.id.substring(0, 8)}</span>
-                        {isPending && (
-                          <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded font-bold uppercase">
-                            Chờ duyệt
-                          </span>
-                        )}
-                        {isApproved && (
-                          <span className="text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded font-bold uppercase animate-pulse">
-                            Được duyệt
-                          </span>
-                        )}
-                        {isPaid && (
-                          <span className="text-[10px] bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded font-bold uppercase">
-                            Đã thanh toán
-                          </span>
-                        )}
-                        {isCancelled && (
-                          <span className="text-[10px] bg-red-50 text-red-800 border border-red-200 px-2 py-0.5 rounded font-bold uppercase">
-                            Đã hủy
-                          </span>
-                        )}
-                      </div>
+                if (prescFilter === 'all') return true;
+                if (prescFilter === 'cho_duyet') return isPending;
+                if (prescFilter === 'duoc_duyet') return isApproved;
+                if (prescFilter === 'da_huy') return isCancelled;
+                if (prescFilter === 'da_thanh_toan') return isPaid;
+                return true;
+              });
 
-                      <div className="space-y-1 text-xs text-gray-600">
-                        <p><span className="font-medium text-gray-800">Người nhận:</span> {order.patientName || 'Chưa cập nhật'}</p>
-                        {order.patientPhone && <p><span className="font-medium text-gray-800">Số điện thoại:</span> {order.patientPhone}</p>}
-                        {order.patientAddress && <p><span className="font-medium text-gray-800">Giao tới:</span> {order.patientAddress}</p>}
-                        {order.voiceTranscript && (
-                          <p className="italic bg-gray-50 p-1.5 rounded border border-gray-100 text-[11px] mt-1 text-gray-500">
-                            " {order.voiceTranscript} "
-                          </p>
-                        )}
-                      </div>
+              if (filteredOrders.length === 0) {
+                return (
+                  <div className="bg-white rounded-xl p-6 text-center border border-dashed border-[#bdc9c5] py-10">
+                    <span className="material-symbols-outlined text-3xl text-gray-300 mb-2">search_off</span>
+                    <p className="font-bold text-xs text-gray-700">Không tìm thấy đơn hàng</p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Không có đơn hàng nào ở trạng thái này.</p>
+                  </div>
+                );
+              }
 
-                      <div className="bg-[#fcfdfd] border border-slate-100 p-2.5 rounded text-xs space-y-1">
-                        <p className="font-bold text-[11px] text-[#00685c] mb-1">Danh mục thuốc:</p>
-                        {items.map((it: any, idx: number) => (
-                          <div key={idx} className="flex justify-between text-gray-700 text-[11px]">
-                            <span>• {it.name} (x{it.quantity} {it.unit || 'phần'})</span>
-                            <span>{((it.price || 0) * (it.quantity || 1)).toLocaleString('vi-VN')}đ</span>
+              return (
+                <div className="space-y-3.5">
+                  {filteredOrders.map((order) => {
+                    const items = order.items || [];
+                    const isPending = order.status === 'cho_duyet' || order.status === 'pending';
+                    const isApproved = order.status === 'duoc_duyet' || order.status === 'approved';
+                    const isPaid = order.status === 'da_thanh_toan';
+                    const isCancelled = order.status === 'da_huy' || order.status === 'rejected';
+
+                    return (
+                      <div key={order.id} className="bg-white border border-[#bdc9c5] rounded-xl p-4 shadow-xs space-y-3 transition-all hover:shadow-md">
+                        <div className="flex justify-between items-center border-b pb-2 border-slate-100">
+                          <span className="font-bold text-xs text-gray-400">#{order.id.substring(0, 8)}</span>
+                          {isPending && (
+                            <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded font-bold uppercase">
+                              Chờ duyệt
+                            </span>
+                          )}
+                          {isApproved && (
+                            <span className="text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded font-bold uppercase animate-pulse">
+                              Được duyệt
+                            </span>
+                          )}
+                          {isPaid && (
+                            <span className="text-[10px] bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded font-bold uppercase">
+                              Đã thanh toán
+                            </span>
+                          )}
+                          {isCancelled && (
+                            <span className="text-[10px] bg-red-50 text-red-800 border border-red-200 px-2 py-0.5 rounded font-bold uppercase">
+                              Đã hủy
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="space-y-1 text-xs text-gray-600">
+                          <p><span className="font-medium text-gray-800">Người nhận:</span> {order.patientName || 'Chưa cập nhật'}</p>
+                          {order.patientPhone && <p><span className="font-medium text-gray-800">Số điện thoại:</span> {order.patientPhone}</p>}
+                          {order.patientAddress && <p><span className="font-medium text-gray-800">Giao tới:</span> {order.patientAddress}</p>}
+                          {order.voiceTranscript && (
+                            <p className="italic bg-gray-50 p-1.5 rounded border border-gray-100 text-[11px] mt-1 text-gray-500">
+                              " {order.voiceTranscript} "
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="bg-[#fcfdfd] border border-slate-100 p-2.5 rounded text-xs space-y-1">
+                          <p className="font-bold text-[11px] text-[#00685c] mb-1">Danh mục thuốc:</p>
+                          {items.map((it: any, idx: number) => (
+                            <div key={idx} className="flex justify-between text-gray-700 text-[11px]">
+                              <span>• {it.name} (x{it.quantity} {it.unit || 'phần'})</span>
+                              <span>{((it.price || 0) * (it.quantity || 1)).toLocaleString('vi-VN')}đ</span>
+                            </div>
+                          ))}
+                          <div className="border-t border-slate-100 pt-1.5 mt-1.5 font-bold text-xs flex justify-between text-[#00685c]">
+                            <span>Tổng giá:</span>
+                            <span>{(order.totalPrice || items.reduce((sum: number, it: any) => sum + (it.price || 0) * (it.quantity || 1), 0)).toLocaleString('vi-VN')}đ</span>
                           </div>
-                        ))}
-                        <div className="border-t border-slate-100 pt-1.5 mt-1.5 font-bold text-xs flex justify-between text-[#00685c]">
-                          <span>Tổng giá:</span>
-                          <span>{(order.totalPrice || items.reduce((sum: number, it: any) => sum + (it.price || 0) * (it.quantity || 1), 0)).toLocaleString('vi-VN')}đ</span>
                         </div>
-                      </div>
 
-                      {/* Pay Button if Approved */}
-                      {isApproved && (
-                        <button
-                          onClick={async () => {
-                            try {
-                              const res = await fetch(`/api/orders/${order.id}/pay`, { method: 'POST' });
-                              const result = await res.json();
-                              if (result.success) {
-                                setNotification('💰 Đã thanh toán đơn thuốc thành công! Nhà thuốc đang giao hàng cho bạn.');
-                                fetchMyOrders();
-                              } else {
-                                setNotification('⚠️ Thanh toán không thành công. Vui lòng thử lại.');
+                        {/* Pay Button if Approved */}
+                        {isApproved && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                const token = await user.getIdToken();
+                                const res = await fetch(`/api/orders/${encodeURIComponent(order.id)}/pay`, {
+                                  method: 'POST',
+                                  headers: {
+                                    authorization: `Bearer ${token}`
+                                  }
+                                });
+                                const result = await res.json();
+                                if (result.success) {
+                                  setNotification('💰 Đã thanh toán đơn thuốc thành công! Nhà thuốc đang giao hàng cho bạn.');
+                                  fetchMyOrders();
+                                } else {
+                                  setNotification('⚠️ Thanh toán không thành công. Vui lòng thử lại.');
+                                }
+                                setTimeout(() => setNotification(null), 3000);
+                              } catch (error) {
+                                console.error('Error paying order:', error);
                               }
-                              setTimeout(() => setNotification(null), 3000);
-                            } catch (error) {
-                              console.error('Error paying order:', error);
-                            }
-                          }}
-                          className="w-full bg-[#00685c] hover:bg-[#005047] text-white py-2 rounded-lg font-bold text-xs transition-all shadow-xs hover:shadow-md cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.98]"
-                        >
-                          <span className="material-symbols-outlined text-sm">payments</span>
-                          Thanh toán đơn thuốc này
-                        </button>
-                      )}
+                            }}
+                            className="w-full bg-[#00685c] hover:bg-[#005047] text-white py-2 rounded-lg font-bold text-xs transition-all shadow-xs hover:shadow-md cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.98]"
+                          >
+                            <span className="material-symbols-outlined text-sm">payments</span>
+                            Thanh toán đơn thuốc này
+                          </button>
+                        )}
 
-                      {/* Status Warnings or Information */}
-                      {isPending && (
-                        <div className="p-2 bg-amber-50 rounded-lg text-[10px] text-amber-800 font-medium flex gap-1 items-start">
-                          <span className="material-symbols-outlined text-xs shrink-0 mt-0.5 animate-bounce">pending</span>
-                          <span>Vui lòng đợi Bác sĩ/Dược sĩ lâm sàng xem xét đơn thuốc. Bạn sẽ có thể thanh toán sau khi đơn được phê duyệt.</span>
-                        </div>
-                      )}
+                        {/* Status Warnings or Information */}
+                        {isPending && (
+                          <div className="p-2 bg-amber-50 rounded-lg text-[10px] text-amber-800 font-medium flex gap-1 items-start">
+                            <span className="material-symbols-outlined text-xs shrink-0 mt-0.5 animate-bounce">pending</span>
+                            <span>Vui lòng đợi Bác sĩ/Dược sĩ lâm sàng xem xét đơn thuốc. Bạn sẽ có thể thanh toán sau khi đơn được phê duyệt.</span>
+                          </div>
+                        )}
 
-                      {isPaid && (
-                        <div className="p-2 bg-emerald-50 rounded-lg text-[10px] text-emerald-800 font-medium flex gap-1 items-start">
-                          <span className="material-symbols-outlined text-xs shrink-0 mt-0.5">local_shipping</span>
-                          <span>Đơn hàng đã thanh toán. Đang trên đường vận chuyển tới địa chỉ của bạn!</span>
-                        </div>
-                      )}
+                        {isPaid && (
+                          <div className="p-2 bg-emerald-50 rounded-lg text-[10px] text-emerald-800 font-medium flex gap-1 items-start">
+                            <span className="material-symbols-outlined text-xs shrink-0 mt-0.5">local_shipping</span>
+                            <span>Đơn hàng đã thanh toán. Đang trên đường vận chuyển tới địa chỉ của bạn!</span>
+                          </div>
+                        )}
 
-                      {isCancelled && (
-                        <div className="p-2 bg-red-50 rounded-lg text-[10px] text-red-800 font-medium flex gap-1 items-start">
-                          <span className="material-symbols-outlined text-xs shrink-0 mt-0.5">cancel</span>
-                          <span>Đơn thuốc bị từ chối hoặc hủy bỏ do không đảm bảo an toàn lâm sàng.</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                        {isCancelled && (
+                          <div className="p-2 bg-red-50 rounded-lg text-[10px] text-red-800 font-medium flex gap-1 items-start">
+                            <span className="material-symbols-outlined text-xs shrink-0 mt-0.5">cancel</span>
+                            <span>Đơn thuốc bị từ chối hoặc hủy bỏ do không đảm bảo an toàn lâm sàng. Bạn không thể thanh toán cho đơn hàng này.</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -1302,6 +1454,21 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 </p>
               </div>
 
+              {/* Field 0: Họ và tên bệnh nhân (có dấu) */}
+              <div>
+                <label className="block text-xs font-bold text-gray-800 mb-1 flex items-center justify-between">
+                  <span>Họ và tên bệnh nhân (có dấu):</span>
+                  <span className="text-[10px] font-semibold text-[#00685c]">(Mặc định từ Gmail / Google Account)</span>
+                </label>
+                <input
+                  type="text"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  placeholder="Nhập họ và tên bệnh nhân có dấu (ví dụ: Trần Văn Nam, Nguyễn Thị Mai)..."
+                  className="w-full text-xs p-2 bg-emerald-50/60 border border-emerald-300 rounded-lg focus:bg-white focus:border-[#00685c] focus:outline-none font-bold text-[#00685c]"
+                />
+              </div>
+
               {/* Field 1: Bệnh nền / Tiền sử lâm sàng */}
               <div>
                 <label className="block text-xs font-bold text-gray-800 mb-1 flex items-center justify-between">
@@ -1310,7 +1477,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 </label>
                 <input
                   type="text"
-                  value={healthProfile.benh_nen || ''}
+                  value={formatConditionToVietnamese(healthProfile.benh_nen) || ''}
                   onChange={(e) => setHealthProfile({ ...healthProfile, benh_nen: e.target.value })}
                   placeholder="Nhập bệnh nền (ví dụ: Cao huyết áp, Tiểu đường, Dạ dày...)"
                   className="w-full text-xs p-2 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:border-[#00685c] focus:outline-none font-semibold text-gray-900"
@@ -1349,7 +1516,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 </label>
                 <input
                   type="text"
-                  value={healthProfile.di_ung || ''}
+                  value={formatConditionToVietnamese(healthProfile.di_ung) || ''}
                   onChange={(e) => setHealthProfile({ ...healthProfile, di_ung: e.target.value })}
                   placeholder="Nhập dị ứng (ví dụ: Penicillin, Aspirin, Paracetamol...)"
                   className="w-full text-xs p-2 bg-red-50/50 border border-red-200 rounded-lg focus:bg-white focus:border-red-500 focus:outline-none font-semibold text-red-900"
@@ -1388,41 +1555,79 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 </label>
                 <input
                   type="text"
-                  value={healthProfile.do_tuoi || healthProfile.nhom_tuoi || ''}
+                  value={healthProfile.do_tuoi || (healthProfile.nhom_tuoi ? formatAgeDisplay(undefined, healthProfile.nhom_tuoi) : '')}
                   onChange={(e) => setHealthProfile({ ...healthProfile, do_tuoi: e.target.value, nhom_tuoi: e.target.value })}
-                  placeholder="Nhập tuổi hoặc nhóm (ví dụ: 40 tuổi, 68 tuổi, Người lớn, Trẻ em...)"
+                  placeholder="Nhập tuổi hoặc nhóm (ví dụ: 16 tuổi, 40 tuổi, Trẻ em, Người cao tuổi...)"
                   className="w-full text-xs p-2 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:border-[#00685c] focus:outline-none font-semibold text-gray-900"
                 />
                 {/* Quick Age Tags */}
                 <div className="flex flex-wrap gap-1 mt-1.5">
                   <button
                     type="button"
+                    onClick={() => handleAddQuickTag('do_tuoi', '16 tuổi')}
+                    className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
+                  >
+                    + 16 tuổi
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleAddQuickTag('do_tuoi', '40 tuổi')}
                     className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
                   >
-                    + Người lớn (12-59t)
+                    + Người lớn (40t)
                   </button>
                   <button
                     type="button"
                     onClick={() => handleAddQuickTag('do_tuoi', '68 tuổi')}
                     className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
                   >
-                    + Người cao tuổi (≥60t)
+                    + Người cao tuổi (68t)
                   </button>
                   <button
                     type="button"
                     onClick={() => handleAddQuickTag('do_tuoi', '8 tuổi')}
                     className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
                   >
-                    + Trẻ em (&lt;12t)
+                    + Trẻ em (8t)
                   </button>
                 </div>
               </div>
 
-              {/* Field 4: Ghi chú sức khỏe bổ sung */}
+              {/* Field 4: Thuốc đang sử dụng */}
+              <div>
+                <label className="block text-xs font-bold text-gray-800 mb-1 flex items-center justify-between">
+                  <span>4. Thuốc đang sử dụng (nếu có):</span>
+                  <span className="text-[10px] font-normal text-blue-600">(Để kiểm tra tương tác)</span>
+                </label>
+                <input
+                  type="text"
+                  value={Array.isArray(healthProfile.thuoc_dang_dung) ? healthProfile.thuoc_dang_dung.join(', ') : (healthProfile.thuoc_dang_dung || '')}
+                  onChange={(e) => setHealthProfile({ ...healthProfile, thuoc_dang_dung: e.target.value })}
+                  placeholder="Nhập tên thuốc đang uống (ví dụ: Amlodipine, Metformin, Panadol...)"
+                  className="w-full text-xs p-2 bg-blue-50/50 border border-blue-200 rounded-lg focus:bg-white focus:border-blue-500 focus:outline-none font-semibold text-blue-900"
+                />
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleAddQuickTag('thuoc_dang_dung', 'Amlodipine')}
+                    className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
+                  >
+                    + Amlodipine
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAddQuickTag('thuoc_dang_dung', 'Metformin')}
+                    className="text-[10px] bg-blue-50 hover:bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-medium cursor-pointer"
+                  >
+                    + Metformin
+                  </button>
+                </div>
+              </div>
+
+              {/* Field 5: Ghi chú sức khỏe bổ sung */}
               <div>
                 <label className="block text-xs font-bold text-gray-800 mb-1">
-                  4. Ghi chú sức khỏe khác:
+                  5. Ghi chú sức khỏe khác:
                 </label>
                 <textarea
                   rows={2}

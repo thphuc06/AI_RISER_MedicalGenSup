@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { HealthProfileConfirmationGate, TranscriptActionGate } from '../server/actionGate.js';
 import { applyCartOperation, cartDocumentId, healthProfileFromDocument, mutateCart } from '../server/cartService.js';
 import type { SafetyData } from '../server/domain.js';
-import { evaluateSafety, mapToAgeGroup, mapToConditionCode } from '../server/safetyService.js';
+import { checkConditionMatch, evaluateSafety, mapToAgeGroup, mapToConditionCode, stringSimilarity, tokenOverlapRatio } from '../server/safetyService.js';
 import { parseSheetCsv, SheetsService, type SheetName, overrideSafetyData } from '../server/sheetsService.js';
 import { resolveAppView } from '../src/routing.js';
 
@@ -224,4 +224,12 @@ test('25. direct active ingredient allergy blocks product with matching ingredie
   assert.equal(safety.verdict, 'BLOCK');
   assert.match(safety.reason || '', /Chống chỉ định dị ứng/);
   assert.match(safety.reason || '', /aspirin/);
+});
+
+test('26. fuzzy condition matching dynamically matches un-indexed disease variations', () => {
+  assert.equal(checkConditionMatch('viêm loét dạ dày tá tràng', 'loet_da_day_ta_trang'), true);
+  assert.equal(checkConditionMatch('đau dạ dày', 'loet_da_day_ta_trang'), true);
+  assert.equal(checkConditionMatch('suy gan cấp', 'suy_gan_nang'), true);
+  assert.equal(tokenOverlapRatio('viêm loét dạ dày', 'loet_da_day_ta_trang') >= 0.5, true);
+  assert.equal(stringSimilarity('loet da day', 'loet da day ta trang') > 0.5, true);
 });

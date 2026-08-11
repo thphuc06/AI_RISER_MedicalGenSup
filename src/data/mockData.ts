@@ -8,18 +8,34 @@ export const INITIAL_ORDERS: Order[] = [
     patientAge: 68,
     patientPhone: '0903 123 456',
     priority: 'Cần gọi',
+    priorityTier: 'TIER_1_CALL',
+    riskScore: 85,
+    riskFactors: [
+      'Bệnh nhân cao tuổi (68 tuổi)',
+      'Cảnh báo tương tác thuốc WARN (Vitamin C liều cao & Metformin)',
+      'Tiền sử bệnh nền: Cao huyết áp, Tiểu đường Type 2'
+    ],
     status: 'pending',
     voiceTranscript: 'Tôi muốn mua thuốc cảm cúm cho người già.',
     clinicalSummary: {
       gender: 'Nam',
       age: 68,
       medicalHistory: ['Cao huyết áp', 'Tiểu đường Type 2'],
+      allergies: ['Penicillin'],
+      currentMeds: ['Metformin 500mg', 'Amlodipine 5mg'],
       symptoms:
-        'Ho khan kéo dài 3 ngày, sốt nhẹ về chiều, đau họng nhẹ. Không có tiền sử dị ứng thuốc nhóm Penicillin.',
+        'Ho khan kéo dài 3 ngày, sốt nhẹ về chiều, đau họng nhẹ.',
       aiTriage: {
         category: 'Gợi ý thuốc điều trị triệu chứng (Standard)',
         riskLevel: 'Cảnh báo tương tác',
         note: 'Cảnh báo tương tác giữa Vitamin C liều cao và Metformin của bệnh nhân.',
+        riskScore: 85,
+        priorityTier: 'TIER_1_CALL',
+        riskFactors: [
+          'Bệnh nhân cao tuổi (68 tuổi)',
+          'Cảnh báo tương tác thuốc WARN (Vitamin C liều cao & Metformin)',
+          'Tiền sử bệnh nền: Cao huyết áp, Tiểu đường Type 2'
+        ]
       },
     },
     items: [
@@ -69,17 +85,31 @@ export const INITIAL_ORDERS: Order[] = [
     patientAge: 45,
     patientPhone: '0912 987 654',
     priority: 'Nhanh',
+    priorityTier: 'TIER_3_FAST',
+    riskScore: 15,
+    riskFactors: [
+      'Đơn thuốc OTC điều trị dị ứng thông thường',
+      'Không có chống chỉ định nguy hiểm'
+    ],
     status: 'pending',
     voiceTranscript: 'Bán cho tôi thuốc xịt mũi dị ứng và viên ngậm viêm họng.',
     clinicalSummary: {
       gender: 'Nữ',
       age: 45,
       medicalHistory: ['Viêm mũi dị ứng mạn tính'],
+      allergies: [],
+      currentMeds: [],
       symptoms: 'Nghẹt mũi nặng khi thay đổi thời tiết, ngứa cổ họng, không sốt.',
       aiTriage: {
         category: 'Xử lý ưu tiên (Fast Track)',
         riskLevel: 'Thấp',
         note: 'Triệu chứng dị ứng thông thường, không phát hiện trùng lặp.',
+        riskScore: 15,
+        priorityTier: 'TIER_3_FAST',
+        riskFactors: [
+          'Đơn thuốc OTC điều trị dị ứng thông thường',
+          'Không có chống chỉ định nguy hiểm'
+        ]
       },
     },
     items: [
@@ -111,17 +141,33 @@ export const INITIAL_ORDERS: Order[] = [
     patientAge: 72,
     patientPhone: '0988 555 444',
     priority: 'Tiêu chuẩn',
+    priorityTier: 'TIER_2_STANDARD',
+    riskScore: 55,
+    riskFactors: [
+      'Bệnh nhân cao tuổi (72 tuổi)',
+      'Tiền sử bệnh nền: Viêm loét dạ dày, Tim mạch',
+      'Cần tư vấn thời điểm uống thuốc cách ly với thuốc tim mạch'
+    ],
     status: 'pending',
     voiceTranscript: 'Tôi cần mua thuốc đau dạ dày và men tiêu hóa.',
     clinicalSummary: {
       gender: 'Nam',
       age: 72,
       medicalHistory: ['Viêm loét dạ dày', 'Tim mạch'],
+      allergies: [],
+      currentMeds: ['Aspirin 81mg'],
       symptoms: 'Ợ chua, đầy hơi sau ăn, đau nhẹ vùng thượng vị 2 ngày qua.',
       aiTriage: {
         category: 'Đơn thuốc tiêu chuẩn (Standard)',
         riskLevel: 'Trung bình',
         note: 'Cần hướng dẫn uống xa bữa ăn với thuốc tim mạch.',
+        riskScore: 55,
+        priorityTier: 'TIER_2_STANDARD',
+        riskFactors: [
+          'Bệnh nhân cao tuổi (72 tuổi)',
+          'Tiền sử bệnh nền: Viêm loét dạ dày, Tim mạch',
+          'Cần tư vấn thời điểm uống thuốc cách ly với thuốc tim mạch'
+        ]
       },
     },
     items: [
@@ -152,17 +198,31 @@ export const INITIAL_ORDERS: Order[] = [
     patientName: 'Đặng Thanh Thảo',
     patientAge: 32,
     patientPhone: '0977 112 233',
-    priority: 'Tiêu chuẩn',
+    priority: 'Nhanh',
+    priorityTier: 'TIER_3_FAST',
+    riskScore: 10,
+    riskFactors: [
+      'Bệnh nhân trẻ tuổi, không bệnh nền',
+      'Thuốc nhỏ mắt bổ sung, an toàn tuyệt đối'
+    ],
     status: 'pending',
     voiceTranscript: 'Thuốc nhỏ mắt nhân tạo cho người dùng máy tính nhiều.',
     clinicalSummary: {
       gender: 'Nữ',
       age: 32,
       medicalHistory: ['Không ghi nhận'],
+      allergies: [],
+      currentMeds: [],
       symptoms: 'Mỏi mắt, khô mắt sau khi làm việc văn phòng 8-10 tiếng.',
       aiTriage: {
         category: 'Chăm sóc nhãn khoa cơ bản',
         riskLevel: 'Thấp',
+        riskScore: 10,
+        priorityTier: 'TIER_3_FAST',
+        riskFactors: [
+          'Bệnh nhân trẻ tuổi, không bệnh nền',
+          'Thuốc nhỏ mắt bổ sung, an toàn tuyệt đối'
+        ]
       },
     },
     items: [

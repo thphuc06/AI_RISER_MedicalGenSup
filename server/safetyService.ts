@@ -44,19 +44,134 @@ function ingredientDoses(product: Product): Map<string, number | null> {
   return result;
 }
 
+export function levenshteinDistance(str1: string, str2: string): number {
+  if (str1.length === 0) return str2.length;
+  if (str2.length === 0) return str1.length;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= str2.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= str1.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[str2.length][str1.length];
+}
+
+export function stringSimilarity(str1: string, str2: string): number {
+  const norm1 = normalizeText(str1);
+  const norm2 = normalizeText(str2);
+  if (!norm1 || !norm2) return 0;
+  if (norm1 === norm2) return 1.0;
+
+  const maxLen = Math.max(norm1.length, norm2.length);
+  if (maxLen === 0) return 1.0;
+  const dist = levenshteinDistance(norm1, norm2);
+  return 1 - dist / maxLen;
+}
+
+export function tokenOverlapRatio(str1: string, str2: string): number {
+  const norm1 = normalizeText(str1.replace(/_/g, ' '));
+  const norm2 = normalizeText(str2.replace(/_/g, ' '));
+
+  const tokens1 = norm1.split(/\s+/).filter((t) => t.length > 1);
+  const tokens2 = norm2.split(/\s+/).filter((t) => t.length > 1);
+  if (tokens1.length === 0 || tokens2.length === 0) return 0;
+
+  const set1 = new Set(tokens1);
+  const set2 = new Set(tokens2);
+
+  let matchCount = 0;
+  for (const t of set1) {
+    if (set2.has(t)) matchCount++;
+  }
+
+  const minLen = Math.min(set1.size, set2.size);
+  return minLen > 0 ? matchCount / minLen : 0;
+}
+
 export function mapToConditionCode(inputStr: string): string {
   const norm = normalizeText(inputStr);
   if (!norm) return '';
-  if (norm.includes('tieu duong') || norm.includes('dai thao duong') || norm.includes('duong huyet') || norm.includes('diabetes')) {
+  if (norm.includes('tieu duong') || norm.includes('dai thao duong') || norm.includes('duong huyet') || norm.includes('diabetes') || norm.includes('duong cao')) {
     return 'dai_thao_duong';
   }
   if (norm.includes('cao huyet ap') || norm.includes('tang huyet ap') || norm.includes('huyet ap') || norm.includes('hypertension')) {
     return 'tang_huyet_ap_nang';
   }
-  if (norm.includes('da day') || norm.includes('ta trang') || norm.includes('loet') || norm.includes('ulcer')) {
+  if (norm.includes('da day') || norm.includes('ta trang') || norm.includes('loet') || norm.includes('ulcer') || norm.includes('trao nguoc')) {
     return 'loet_da_day_ta_trang';
   }
+  if (norm.includes('suy gan') || norm.includes('viem gan') || norm.includes('benh gan')) {
+    return 'suy_gan_nang';
+  }
+  if (norm.includes('suy than') || norm.includes('benh than')) {
+    return 'suy_than_nang';
+  }
+  if (norm.includes('suy tim') || norm.includes('benh tim')) {
+    return 'suy_tim_nang';
+  }
+  if (norm.includes('hen') || norm.includes('hen phe quan') || norm.includes('asthma')) {
+    return 'hen_phe_quan';
+  }
+  if (norm.includes('mang thai') || norm.includes('co thai') || norm.includes('bau') || norm.includes('pregnancy')) {
+    return 'mang_thai';
+  }
+  if (norm.includes('nghien ruou') || norm.includes('uong ruou') || norm.includes('ruou bia')) {
+    return 'nghien_ruou';
+  }
+  if (norm.includes('glocom') || norm.includes('tang nhan ap')) {
+    return 'glocom_goc_dong';
+  }
+  if (norm.includes('tuyen tien liet') || norm.includes('phi dai tuyen tien liet')) {
+    return 'phi_dai_tuyen_tien_liet';
+  }
+  if (norm.includes('cuong giap') || norm.includes('bazedow')) {
+    return 'cuong_giap';
+  }
   return normalizeCode(inputStr);
+}
+
+export function checkConditionMatch(userCondition: string, ruleCondition: string): boolean {
+  if (!userCondition || !ruleCondition) return false;
+
+  // 1. Direct or normalized code exact match
+  const codeUser = normalizeCode(userCondition);
+  const codeRule = normalizeCode(ruleCondition);
+  if (codeUser && codeRule && (codeUser === codeRule)) return true;
+
+  const normUser = normalizeText(userCondition.replace(/_/g, ' '));
+  const normRule = normalizeText(ruleCondition.replace(/_/g, ' '));
+  if (normUser === normRule) return true;
+
+  // 2. Substring inclusion
+  if (normUser.length >= 3 && normRule.length >= 3) {
+    if (normUser.includes(normRule) || normRule.includes(normUser)) return true;
+  }
+
+  // 3. Dynamic Token Overlap (Fuzzy word matching)
+  const tokenRatio = tokenOverlapRatio(userCondition, ruleCondition);
+  if (tokenRatio >= 0.6) return true;
+
+  // 4. Character Levenshtein similarity ratio (>= 0.70)
+  const charSim = stringSimilarity(normUser, normRule);
+  if (charSim >= 0.7) return true;
+
+  // 5. Synonym / Alias Mapping fallback
+  const mappedUser = mapToConditionCode(userCondition);
+  const mappedRule = mapToConditionCode(ruleCondition);
+  if (mappedUser && mappedRule && mappedUser === mappedRule) return true;
+
+  return false;
 }
 
 export function mapToAgeGroup(inputVal: unknown): { nhom_tuoi: string | null; do_tuoi: string | null } {
@@ -66,16 +181,7 @@ export function mapToAgeGroup(inputVal: unknown): { nhom_tuoi: string | null; do
   const str = String(inputVal).trim();
   const norm = normalizeText(str);
 
-  if (norm === 'nguoi_lon' || norm === 'nguoi lon' || norm === 'truong thanh' || norm === 'adult') {
-    return { nhom_tuoi: 'nguoi_lon', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
-  }
-  if (norm === 'tre_em' || norm === 'tre em' || norm === 'em be' || norm === 'be' || norm === 'child') {
-    return { nhom_tuoi: 'tre_em', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
-  }
-  if (norm === 'nguoi_cao_tuoi' || norm === 'nguoi cao tuoi' || norm === 'nguoi gia' || norm === 'elderly' || norm === 'senior') {
-    return { nhom_tuoi: 'nguoi_cao_tuoi', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
-  }
-
+  // Direct numeric check
   const match = str.match(/\d+/);
   if (match) {
     const age = parseInt(match[0], 10);
@@ -85,6 +191,16 @@ export function mapToAgeGroup(inputVal: unknown): { nhom_tuoi: string | null; do
       if (age >= 60) return { nhom_tuoi: 'nguoi_cao_tuoi', do_tuoi: display };
       return { nhom_tuoi: 'nguoi_lon', do_tuoi: display };
     }
+  }
+
+  if (norm === 'nguoi_lon' || norm === 'nguoi lon' || norm === 'truong thanh' || norm === 'adult') {
+    return { nhom_tuoi: 'nguoi_lon', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
+  }
+  if (norm === 'tre_em' || norm === 'tre em' || norm === 'em be' || norm === 'be' || norm === 'child') {
+    return { nhom_tuoi: 'tre_em', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
+  }
+  if (norm === 'nguoi_cao_tuoi' || norm === 'nguoi cao tuoi' || norm === 'nguoi gia' || norm === 'elderly' || norm === 'senior') {
+    return { nhom_tuoi: 'nguoi_cao_tuoi', do_tuoi: str.includes('tuổi') ? str : `${str} tuổi` };
   }
 
   return { nhom_tuoi: normalizeCode(str) || null, do_tuoi: str };
@@ -202,12 +318,24 @@ export function evaluateSafety(input: EvaluateSafetyInput): SafetyResult {
     }
   }
 
-  const conditions = new Set(profileValues(healthProfile));
+  const userCondList: string[] = [];
+  if (healthProfile) {
+    for (const field of ['benh_nen', 'conditions', 'doi_tuong'] as const) {
+      const val = healthProfile[field];
+      if (Array.isArray(val)) userCondList.push(...val.map(String));
+      else if (typeof val === 'string') userCondList.push(...val.split(/[;,]/));
+    }
+  }
+  const userAgeGrp = ageGroup(healthProfile);
+  if (userAgeGrp) userCondList.push(userAgeGrp);
+
   let warningReason = '';
   for (const { product } of resolved) {
     const ingredients = new Set(parseActiveIngredients(product.hoat_chat));
     for (const rule of safetyData.contraindications) {
-      if (!ingredients.has(normalizeText(rule.hoat_chat)) || !conditions.has(normalizeCode(rule.dieu_kien))) continue;
+      if (!ingredients.has(normalizeText(rule.hoat_chat))) continue;
+      const isMatch = userCondList.some((userCond) => checkConditionMatch(userCond, rule.dieu_kien));
+      if (!isMatch) continue;
       if (rule.muc_do.trim().toUpperCase() === 'BLOCK') {
         return { verdict: 'BLOCK', reason: rule.ly_do_ngan_gon };
       }
@@ -242,4 +370,55 @@ export function evaluateSafety(input: EvaluateSafetyInput): SafetyResult {
   if (warningReason) return { verdict: 'WARN', reason: warningReason };
   if (escalationReason) return { verdict: 'ESCALATE', reason: escalationReason };
   return { verdict: 'ALLOW' };
+}
+
+export function getContraindicationsForQuery(
+  query: { hoat_chat?: string; sku?: string },
+  safetyData: SafetyData
+) {
+  let targetIngredients: string[] = [];
+
+  if (query.sku) {
+    const product = safetyData.products.find(
+      (p) => p.sku.toLowerCase() === query.sku?.toLowerCase()
+    );
+    if (product) {
+      targetIngredients = parseActiveIngredients(product.hoat_chat);
+    }
+  }
+
+  if (query.hoat_chat) {
+    const parsed = parseActiveIngredients(query.hoat_chat);
+    targetIngredients = Array.from(new Set([...targetIngredients, ...parsed]));
+  }
+
+  const normTargets = targetIngredients.map(normalizeText);
+
+  const matchedRules = safetyData.contraindications.filter((rule) => {
+    if (normTargets.length === 0) return true;
+    const ruleIng = normalizeText(rule.hoat_chat);
+    return normTargets.some((t) => t === ruleIng || t.includes(ruleIng) || ruleIng.includes(t));
+  });
+
+  return matchedRules;
+}
+
+export function getMaxDoseForQuery(
+  query: { hoat_chat: string; do_tuoi_hoac_nhom_tuoi?: string | number },
+  safetyData: SafetyData
+) {
+  const normIng = normalizeText(query.hoat_chat);
+  let matched = safetyData.maxDoses.filter((rule) => {
+    const ruleIng = normalizeText(rule.hoat_chat);
+    return normIng === ruleIng || normIng.includes(ruleIng) || ruleIng.includes(normIng);
+  });
+
+  if (query.do_tuoi_hoac_nhom_tuoi !== undefined && query.do_tuoi_hoac_nhom_tuoi !== '') {
+    const { nhom_tuoi } = mapToAgeGroup(query.do_tuoi_hoac_nhom_tuoi);
+    if (nhom_tuoi) {
+      matched = matched.filter((rule) => normalizeCode(rule.nhom_tuoi) === nhom_tuoi);
+    }
+  }
+
+  return matched;
 }

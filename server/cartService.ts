@@ -2,6 +2,10 @@ import type { CartLine, HealthProfile, SafetyResult } from './domain.js';
 import { adminDb, FieldValue, SERVER_SECRET } from './firebaseAdmin.js';
 import { evaluateSafety } from './safetyService.js';
 import { getSafetyData } from './sheetsService.js';
+import { computeOrderTriageScore } from '../src/utils/triageCalculator.js';
+import { db } from '../src/db/index.js';
+import { products } from '../src/db/schema.js';
+import { eq, sql } from 'drizzle-orm';
 
 export type CartOperation =
   | { type: 'add'; sku: string; quantity: number; source?: string }
@@ -197,12 +201,86 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
       const [cartSnapshot, profileSnapshot] = await Promise.all([transaction.get(cartRef), transaction.get(profileRef)]);
       const items = cartSnapshot.exists && Array.isArray(cartSnapshot.data()?.items) ? cartSnapshot.data()?.items as StoredCartItem[] : [];
       const confirmedTranscript = cartSnapshot.exists ? String(cartSnapshot.data()?.confirmedTranscript || '') : '';
-      if (!confirmedTranscript) return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
+      const finalTranscript = confirmedTranscript || 'Khách hàng đặt hàng trực tiếp từ danh mục.';
       const profile = profileSnapshot.exists ? profileSnapshot.data() as HealthProfile : null;
-      const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript, safetyData });
+      const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript: finalTranscript, safetyData });
       if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
-      transaction.set(orderRef, { userId, items, confirmedTranscript, customer, safetyVerdict: safety.verdict, safetyReason: safety.reason || null, status: 'cho_duyet', serverSecret: SERVER_SECRET, createdAt: FieldValue.serverTimestamp() });
+
+      const patientName = customer.name || profile?.ho_ten || 'Khách hàng';
+      const patientAge = profile?.do_tuoi || profile?.nhom_tuoi || 0;
+      const patientPhone = customer.phone || '';
+
+      const medicalHistory = profile?.benh_nen ? (Array.isArray(profile.benh_nen) ? profile.benh_nen : [profile.benh_nen]) : [];
+      const allergies = profile?.di_ung ? (Array.isArray(profile.di_ung) ? profile.di_ung : [profile.di_ung]) : [];
+      const currentMeds = profile?.thuoc_dang_dung ? (Array.isArray(profile.thuoc_dang_dung) ? profile.thuoc_dang_dung : [profile.thuoc_dang_dung]) : [];
+      const specialConditions = profile?.trang_thai_dac_biet ? (Array.isArray(profile.trang_thai_dac_biet) ? profile.trang_thai_dac_biet : [profile.trang_thai_dac_biet]) : [];
+
+      const triage = computeOrderTriageScore({
+        age: patientAge,
+        medicalHistory,
+        allergies,
+        currentMeds,
+        specialConditions,
+        symptoms: finalTranscript,
+        safetyVerdict: safety.verdict,
+        safetyReason: safety.reason,
+        items,
+      });
+
+      const clinicalSummary = {
+        gender: profile?.doi_tuong || 'Nam',
+        age: patientAge,
+        medicalHistory,
+        allergies,
+        currentMeds,
+        specialConditions,
+        healthNotes: profile?.ghi_chu || '',
+        symptoms: finalTranscript,
+        aiTriage: {
+          category: safety.verdict === 'ALLOW' ? 'An toàn (ALLOW)' : safety.verdict === 'WARN' ? 'Cảnh báo (WARN)' : 'Chờ duyệt',
+          riskLevel: safety.verdict === 'WARN' ? 'Cảnh báo tương tác' : triage.riskScore >= 65 ? 'Cao' : triage.riskScore >= 30 ? 'Trung bình' : 'Thấp',
+          note: safety.reason || '',
+          riskScore: triage.riskScore,
+          priorityTier: triage.priorityTier,
+          riskFactors: triage.riskFactors,
+        },
+      };
+
+      transaction.set(orderRef, {
+        userId,
+        patientName,
+        patientAge,
+        patientPhone,
+        priority: triage.priority,
+        priorityTier: triage.priorityTier,
+        riskScore: triage.riskScore,
+        riskFactors: triage.riskFactors,
+        clinicalSummary,
+        items,
+        confirmedTranscript: finalTranscript,
+        customer,
+        safetyVerdict: safety.verdict,
+        safetyReason: safety.reason || null,
+        status: 'cho_duyet',
+        serverSecret: SERVER_SECRET,
+        createdAt: FieldValue.serverTimestamp()
+      });
       transaction.set(cartRef, { items: [], confirmedTranscript: '' }, { merge: true });
+
+      // Decrement stock in PostgreSQL (Cloud SQL) for all items in the order
+      for (const item of items) {
+        try {
+          await db.update(products)
+            .set({
+              ton_kho: sql`GREATEST(0, ${products.ton_kho} - ${item.quantity})`
+            })
+            .where(eq(products.sku, item.id));
+          console.log(`[Postgres] Decremented SKU ${item.id} quantity by ${item.quantity}`);
+        } catch (dbErr) {
+          console.error(`[Postgres] Error updating stock for SKU ${item.id}:`, dbErr);
+        }
+      }
+
       return { success: true, orderId: orderRef.id, ...safety };
     });
   } catch (error) {
@@ -211,11 +289,26 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
       const memCart = previewCarts.get(userId) || { items: [] };
       const items = memCart.items;
       const confirmedTranscript = memCart.confirmedTranscript || '';
-      if (!confirmedTranscript) return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
+      const finalTranscript = confirmedTranscript || 'Khách hàng đặt hàng trực tiếp từ danh mục.';
       const profile = previewHealthProfiles.get(userId) || null;
-      const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript, safetyData });
+      const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript: finalTranscript, safetyData });
       if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
       const orderId = `preview_order_${Date.now()}`;
+
+      // Decrement stock in PostgreSQL (Cloud SQL) even in fallback mode
+      for (const item of items) {
+        try {
+          await db.update(products)
+            .set({
+              ton_kho: sql`GREATEST(0, ${products.ton_kho} - ${item.quantity})`
+            })
+            .where(eq(products.sku, item.id));
+          console.log(`[Postgres-Fallback] Decremented SKU ${item.id} quantity by ${item.quantity}`);
+        } catch (dbErr) {
+          console.error(`[Postgres-Fallback] Error updating stock for SKU ${item.id}:`, dbErr);
+        }
+      }
+
       previewCarts.set(userId, { items: [], confirmedTranscript: '' });
       return { success: true, orderId, ...safety };
     }

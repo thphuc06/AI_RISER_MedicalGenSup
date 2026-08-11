@@ -8,7 +8,12 @@ import { requireFirebaseUser, type AuthenticatedRequest } from './server/auth.js
 import { checkoutCart, mutateCart, saveHealthProfile, readCart, readHealthProfile, type CartOperation } from './server/cartService.js';
 import { setupLiveAgentWebSocket } from './server/liveAgentHandler.js';
 import { mapToAgeGroup } from './server/safetyService.js';
-import { getCacheStatus, getContraindications, getMaxDoses, getProducts, getRedFlags, getValidAgeGroups, getValidConditions, loadAllSheets, startPeriodicRefresh } from './server/sheetsService.js';
+import { getCacheStatus, getContraindications, getMaxDoses, getProducts, getRedFlags, getValidAgeGroups, getValidConditions, loadAllSheets, startPeriodicRefresh, reloadSafetyDataFromPostgres } from './server/sheetsService.js';
+import { computeOrderTriageScore } from './src/utils/triageCalculator.js';
+import { db } from './src/db/index.js';
+import { products, contraindications, maxDoses, redFlags } from './src/db/schema.js';
+import { getEmbedding } from './server/syncService.js';
+import { eq } from 'drizzle-orm';
 
 const EXPECTED_PROJECT_ID = 'project-c55c421d-248e-4800-bfb';
 
@@ -16,7 +21,7 @@ async function startServer() {
   const app = express();
   const port = Number(process.env.PORT || 3000);
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb' }));
+  app.use(express.json({ limit: '50mb' }));
 
   const httpServer = createServer(app);
   const wss = new WebSocketServer({ noServer: true });
@@ -59,6 +64,229 @@ async function startServer() {
     if (!configuredSecret || req.headers['x-admin-sync-secret'] !== configuredSecret) return res.status(403).json({ success: false, error: 'Administrative sync is disabled or unauthorized' });
     const status = await loadAllSheets();
     return res.status(status.isHealthy ? 200 : 503).json({ success: status.isHealthy, message: status.isHealthy ? 'Google Sheets synced successfully' : 'Google Sheets sync failed', data: status });
+  });
+
+  // ADMIN CRUD API ENDPOINTS (Direct PostgreSQL write + real-time Gemini Embedding sync + Cache reload)
+  
+  // 1. PRODUCTS
+  app.post('/api/admin/products', requireFirebaseUser, async (req, res) => {
+    try {
+      const prod = req.body;
+      if (!prod || !prod.sku || !prod.ten_san_pham || !prod.hoat_chat) {
+        return res.status(400).json({ success: false, error: 'Thiếu thông tin sản phẩm thiết yếu.' });
+      }
+
+      // Generate embedding dynamically
+      const embedText = `${prod.ten_san_pham}. Chỉ định: ${prod.chi_dinh_ngan || ''}`;
+      const embedding = await getEmbedding(embedText);
+
+      await db.insert(products)
+        .values({
+          sku: prod.sku,
+          ten_san_pham: prod.ten_san_pham,
+          hoat_chat: prod.hoat_chat,
+          ham_luong_mg: prod.ham_luong_mg || '',
+          dang_bao_che: prod.dang_bao_che || '',
+          nhom: prod.nhom || '',
+          rx_status: prod.rx_status || 'OTC',
+          gia: Number(prod.gia || 0),
+          ton_kho: Number(prod.ton_kho || 0),
+          chi_dinh_ngan: prod.chi_dinh_ngan || '',
+          cach_dung_co_ban: prod.cach_dung_co_ban || '',
+          embedding: embedding,
+        })
+        .onConflictDoUpdate({
+          target: products.sku,
+          set: {
+            ten_san_pham: prod.ten_san_pham,
+            hoat_chat: prod.hoat_chat,
+            ham_luong_mg: prod.ham_luong_mg || '',
+            dang_bao_che: prod.dang_bao_che || '',
+            nhom: prod.nhom || '',
+            rx_status: prod.rx_status || 'OTC',
+            gia: Number(prod.gia || 0),
+            ton_kho: Number(prod.ton_kho || 0),
+            chi_dinh_ngan: prod.chi_dinh_ngan || '',
+            cach_dung_co_ban: prod.cach_dung_co_ban || '',
+            embedding: embedding,
+            updatedAt: new Date(),
+          }
+        });
+
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã lưu sản phẩm và tạo vector embedding thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error saving product:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.delete('/api/admin/products/:sku', requireFirebaseUser, async (req, res) => {
+    try {
+      const { sku } = req.params;
+      await db.delete(products).where(eq(products.sku, sku));
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã xóa sản phẩm thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error deleting product:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  // 2. CONTRAINDICATIONS
+  app.post('/api/admin/contraindications', requireFirebaseUser, async (req, res) => {
+    try {
+      const contra = req.body;
+      if (!contra || !contra.hoat_chat || !contra.dieu_kien) {
+        return res.status(400).json({ success: false, error: 'Thiếu thông tin chống chỉ định thiết yếu.' });
+      }
+
+      // Generate embedding dynamically
+      const embedding = await getEmbedding(contra.dieu_kien);
+
+      if (contra.id) {
+        // Update existing
+        await db.update(contraindications)
+          .set({
+            hoat_chat: contra.hoat_chat,
+            dieu_kien: contra.dieu_kien,
+            loai: contra.loai || '',
+            muc_do: contra.muc_do || '',
+            ly_do_ngan_gon: contra.ly_do_ngan_gon || '',
+            embedding: embedding,
+          })
+          .where(eq(contraindications.id, Number(contra.id)));
+      } else {
+        // Insert new
+        await db.insert(contraindications)
+          .values({
+            hoat_chat: contra.hoat_chat,
+            dieu_kien: contra.dieu_kien,
+            loai: contra.loai || '',
+            muc_do: contra.muc_do || '',
+            ly_do_ngan_gon: contra.ly_do_ngan_gon || '',
+            embedding: embedding,
+          });
+      }
+
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã lưu chống chỉ định thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error saving contraindication:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.delete('/api/admin/contraindications/:id', requireFirebaseUser, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      await db.delete(contraindications).where(eq(contraindications.id, id));
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã xóa chống chỉ định thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error deleting contraindication:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  // 3. MAX DOSES
+  app.post('/api/admin/max-doses', requireFirebaseUser, async (req, res) => {
+    try {
+      const md = req.body;
+      if (!md || !md.hoat_chat || !md.nhom_tuoi || md.max_mg_ngay === undefined) {
+        return res.status(400).json({ success: false, error: 'Thiếu thông tin liều lượng tối đa.' });
+      }
+
+      if (md.id) {
+        // Update
+        await db.update(maxDoses)
+          .set({
+            hoat_chat: md.hoat_chat,
+            nhom_tuoi: md.nhom_tuoi,
+            max_mg_ngay: Number(md.max_mg_ngay),
+          })
+          .where(eq(maxDoses.id, Number(md.id)));
+      } else {
+        // Insert
+        await db.insert(maxDoses)
+          .values({
+            hoat_chat: md.hoat_chat,
+            nhom_tuoi: md.nhom_tuoi,
+            max_mg_ngay: Number(md.max_mg_ngay),
+          });
+      }
+
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã lưu liều lượng tối đa thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error saving max dose:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.delete('/api/admin/max-doses/:id', requireFirebaseUser, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      await db.delete(maxDoses).where(eq(maxDoses.id, id));
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã xóa giới hạn liều tối đa thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error deleting max dose:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  // 4. RED FLAGS
+  app.post('/api/admin/red-flags', requireFirebaseUser, async (req, res) => {
+    try {
+      const rf = req.body;
+      if (!rf || !rf.tu_khoa_trieu_chung) {
+        return res.status(400).json({ success: false, error: 'Thiếu triệu chứng cảnh báo.' });
+      }
+
+      const embedding = await getEmbedding(rf.tu_khoa_trieu_chung);
+
+      if (rf.id) {
+        // Update
+        await db.update(redFlags)
+          .set({
+            tu_khoa_trieu_chung: rf.tu_khoa_trieu_chung,
+            muc_do: rf.muc_do || '',
+            hanh_dong: rf.hanh_dong || '',
+            thong_diep: rf.thong_diep || '',
+            embedding: embedding,
+          })
+          .where(eq(redFlags.id, Number(rf.id)));
+      } else {
+        // Insert
+        await db.insert(redFlags)
+          .values({
+            tu_khoa_trieu_chung: rf.tu_khoa_trieu_chung,
+            muc_do: rf.muc_do || '',
+            hanh_dong: rf.hanh_dong || '',
+            thong_diep: rf.thong_diep || '',
+            embedding: embedding,
+          });
+      }
+
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã lưu triệu chứng cảnh báo nguy hiểm thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error saving red flag:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.delete('/api/admin/red-flags/:id', requireFirebaseUser, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      await db.delete(redFlags).where(eq(redFlags.id, id));
+      await reloadSafetyDataFromPostgres();
+      return res.json({ success: true, message: 'Đã xóa dấu hiệu cảnh báo thành công!' });
+    } catch (err: any) {
+      console.error('[Admin API] Error deleting red flag:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
   });
 
   app.get('/api/cart', requireFirebaseUser, async (req: AuthenticatedRequest, res) => {
@@ -147,6 +375,7 @@ async function startServer() {
     if (!req.userId || !req.body?.confirmed) return res.status(400).json({ success: false, error: 'Explicit confirmation is required' });
     const input = req.body.profile && typeof req.body.profile === 'object' ? req.body.profile as Record<string, unknown> : {};
     
+    const rawHoTen = String(input.ho_ten || input.customerName || input.name || '').slice(0, 120);
     const rawBenhNen = String(input.benh_nen || input.conditions || '').slice(0, 500);
     const rawDoiTuong = String(input.doi_tuong || '').slice(0, 500);
     const rawDiUng = String(input.di_ung || '').slice(0, 500);
@@ -157,6 +386,7 @@ async function startServer() {
     const mappedAge = mapToAgeGroup(rawDoTuoi || rawNhomTuoi);
 
     const profile: Record<string, unknown> = {
+      ho_ten: rawHoTen,
       benh_nen: rawBenhNen,
       doi_tuong: rawDoiTuong,
       di_ung: rawDiUng,
@@ -182,29 +412,73 @@ async function startServer() {
     try {
       const { adminDb } = await import('./server/firebaseAdmin.js');
       const snapshot = await adminDb.collection('orders').where('userId', '==', req.userId).get();
+      let userProfile: any = null;
+      try {
+        const pSnap = await adminDb.collection('health_profiles').doc(req.userId).get();
+        if (pSnap.exists) userProfile = pSnap.data();
+      } catch (pErr) {
+        console.warn('Could not read user health profile:', pErr);
+      }
+
       const orders = snapshot.docs.map((doc) => {
         const data = doc.data();
         const id = data.id || `#${doc.id}`;
+        const ageVal = data.patientAge || data.clinicalSummary?.age || userProfile?.do_tuoi || userProfile?.nhom_tuoi || 0;
+        const nameVal = data.patientName || data.customer?.name || userProfile?.ho_ten || 'Khách hàng';
+
+        const medHistory = data.clinicalSummary?.medicalHistory?.length ? data.clinicalSummary.medicalHistory : (userProfile?.benh_nen ? (Array.isArray(userProfile.benh_nen) ? userProfile.benh_nen : [userProfile.benh_nen]) : []);
+        const allergies = data.clinicalSummary?.allergies?.length ? data.clinicalSummary.allergies : (userProfile?.di_ung ? (Array.isArray(userProfile.di_ung) ? userProfile.di_ung : [userProfile.di_ung]) : []);
+        const currentMeds = data.clinicalSummary?.currentMeds?.length ? data.clinicalSummary.currentMeds : (userProfile?.thuoc_dang_dung ? (Array.isArray(userProfile.thuoc_dang_dung) ? userProfile.thuoc_dang_dung : [userProfile.thuoc_dang_dung]) : []);
+        const specialConditions = data.clinicalSummary?.specialConditions?.length ? data.clinicalSummary.specialConditions : (userProfile?.trang_thai_dac_biet ? (Array.isArray(userProfile.trang_thai_dac_biet) ? userProfile.trang_thai_dac_biet : [userProfile.trang_thai_dac_biet]) : []);
+        const symptoms = data.clinicalSummary?.symptoms || data.confirmedTranscript || '';
+
+        const calculatedTriage = computeOrderTriageScore({
+          age: ageVal,
+          medicalHistory: medHistory,
+          allergies,
+          currentMeds,
+          specialConditions,
+          symptoms,
+          safetyVerdict: data.safetyVerdict,
+          safetyReason: data.safetyReason,
+          items: data.items || [],
+        });
+
+        const riskScore = typeof data.riskScore === 'number' ? data.riskScore : (data.clinicalSummary?.aiTriage?.riskScore ?? calculatedTriage.riskScore);
+        const priorityTier = data.priorityTier || data.clinicalSummary?.aiTriage?.priorityTier || calculatedTriage.priorityTier;
+        const priority = data.priority || calculatedTriage.priority;
+        const riskFactors = data.riskFactors || data.clinicalSummary?.aiTriage?.riskFactors || calculatedTriage.riskFactors;
+
         return {
           id,
           docId: doc.id,
           timestamp: data.timestamp || '08:00',
-          patientName: data.patientName || data.customer?.name || 'Khách hàng',
-          patientAge: data.patientAge || data.clinicalSummary?.age || 0,
+          patientName: nameVal,
+          patientAge: ageVal,
           patientPhone: data.patientPhone || data.customer?.phone || '',
           patientAddress: data.customer?.address || '',
-          priority: data.priority || 'Tiêu chuẩn',
+          priority,
+          priorityTier,
+          riskScore,
+          riskFactors,
           status: data.status || 'cho_duyet',
           voiceTranscript: data.voiceTranscript || data.confirmedTranscript || '',
           clinicalSummary: {
-            gender: data.clinicalSummary?.gender || 'Nam',
-            age: data.clinicalSummary?.age || data.patientAge || 0,
-            medicalHistory: data.clinicalSummary?.medicalHistory || [],
-            symptoms: data.clinicalSummary?.symptoms || '',
+            gender: data.clinicalSummary?.gender || userProfile?.doi_tuong || 'Nam',
+            age: ageVal,
+            medicalHistory: medHistory,
+            allergies,
+            currentMeds,
+            specialConditions,
+            healthNotes: data.clinicalSummary?.healthNotes || userProfile?.ghi_chu || '',
+            symptoms,
             aiTriage: {
               category: data.clinicalSummary?.aiTriage?.category || 'Chưa phân loại',
-              riskLevel: data.clinicalSummary?.aiTriage?.riskLevel || 'Thấp',
+              riskLevel: data.clinicalSummary?.aiTriage?.riskLevel || (riskScore >= 65 ? 'Cao' : riskScore >= 30 ? 'Trung bình' : 'Thấp'),
               note: data.clinicalSummary?.aiTriage?.note || '',
+              riskScore,
+              priorityTier,
+              riskFactors,
             },
           },
           items: data.items || [],
@@ -235,30 +509,81 @@ async function startServer() {
     try {
       const { adminDb } = await import('./server/firebaseAdmin.js');
       const snapshot = await adminDb.collection('orders').get();
+
+      const userIds = [...new Set(snapshot.docs.map(d => d.data().userId).filter(Boolean))];
+      const profilesMap = new Map<string, any>();
+      if (userIds.length > 0) {
+        try {
+          const pSnaps = await Promise.all(userIds.map(uid => adminDb.collection('health_profiles').doc(uid).get()));
+          for (const pSnap of pSnaps) {
+            if (pSnap.exists) profilesMap.set(pSnap.id, pSnap.data());
+          }
+        } catch (pErr) {
+          console.warn('Could not fetch profiles for orders list:', pErr);
+        }
+      }
+
       const orders = snapshot.docs.map((doc) => {
         const data = doc.data();
         const id = data.id || `#${doc.id}`;
+        const uProfile = data.userId ? profilesMap.get(data.userId) : null;
+        const ageVal = data.patientAge || data.clinicalSummary?.age || uProfile?.do_tuoi || uProfile?.nhom_tuoi || 0;
+        const nameVal = data.patientName || data.customer?.name || uProfile?.ho_ten || 'Khách hàng';
+
+        const medHistory = data.clinicalSummary?.medicalHistory?.length ? data.clinicalSummary.medicalHistory : (uProfile?.benh_nen ? (Array.isArray(uProfile.benh_nen) ? uProfile.benh_nen : [uProfile.benh_nen]) : []);
+        const allergies = data.clinicalSummary?.allergies?.length ? data.clinicalSummary.allergies : (uProfile?.di_ung ? (Array.isArray(uProfile.di_ung) ? uProfile.di_ung : [uProfile.di_ung]) : []);
+        const currentMeds = data.clinicalSummary?.currentMeds?.length ? data.clinicalSummary.currentMeds : (uProfile?.thuoc_dang_dung ? (Array.isArray(uProfile.thuoc_dang_dung) ? uProfile.thuoc_dang_dung : [uProfile.thuoc_dang_dung]) : []);
+        const specialConditions = data.clinicalSummary?.specialConditions?.length ? data.clinicalSummary.specialConditions : (uProfile?.trang_thai_dac_biet ? (Array.isArray(uProfile.trang_thai_dac_biet) ? uProfile.trang_thai_dac_biet : [uProfile.trang_thai_dac_biet]) : []);
+        const symptoms = data.clinicalSummary?.symptoms || data.confirmedTranscript || '';
+
+        const calculatedTriage = computeOrderTriageScore({
+          age: ageVal,
+          medicalHistory: medHistory,
+          allergies,
+          currentMeds,
+          specialConditions,
+          symptoms,
+          safetyVerdict: data.safetyVerdict,
+          safetyReason: data.safetyReason,
+          items: data.items || [],
+        });
+
+        const riskScore = typeof data.riskScore === 'number' ? data.riskScore : (data.clinicalSummary?.aiTriage?.riskScore ?? calculatedTriage.riskScore);
+        const priorityTier = data.priorityTier || data.clinicalSummary?.aiTriage?.priorityTier || calculatedTriage.priorityTier;
+        const priority = data.priority || calculatedTriage.priority;
+        const riskFactors = data.riskFactors || data.clinicalSummary?.aiTriage?.riskFactors || calculatedTriage.riskFactors;
+
         const item = {
           id,
           docId: doc.id,
           userId: data.userId || null,
           timestamp: data.timestamp || '08:00',
-          patientName: data.patientName || data.customer?.name || 'Khách hàng',
-          patientAge: data.patientAge || data.clinicalSummary?.age || 0,
+          patientName: nameVal,
+          patientAge: ageVal,
           patientPhone: data.patientPhone || data.customer?.phone || '',
           patientAddress: data.customer?.address || '',
-          priority: data.priority || 'Tiêu chuẩn',
+          priority,
+          priorityTier,
+          riskScore,
+          riskFactors,
           status: data.status || 'cho_duyet',
           voiceTranscript: data.voiceTranscript || data.confirmedTranscript || '',
           clinicalSummary: {
-            gender: data.clinicalSummary?.gender || 'Nam',
-            age: data.clinicalSummary?.age || data.patientAge || 0,
-            medicalHistory: data.clinicalSummary?.medicalHistory || [],
-            symptoms: data.clinicalSummary?.symptoms || '',
+            gender: data.clinicalSummary?.gender || uProfile?.doi_tuong || 'Nam',
+            age: ageVal,
+            medicalHistory: medHistory,
+            allergies,
+            currentMeds,
+            specialConditions,
+            healthNotes: data.clinicalSummary?.healthNotes || uProfile?.ghi_chu || '',
+            symptoms,
             aiTriage: {
               category: data.clinicalSummary?.aiTriage?.category || 'Chưa phân loại',
-              riskLevel: data.clinicalSummary?.aiTriage?.riskLevel || 'Thấp',
+              riskLevel: data.clinicalSummary?.aiTriage?.riskLevel || (riskScore >= 65 ? 'Cao' : riskScore >= 30 ? 'Trung bình' : 'Thấp'),
               note: data.clinicalSummary?.aiTriage?.note || '',
+              riskScore,
+              priorityTier,
+              riskFactors,
             },
           },
           items: data.items || [],
@@ -325,13 +650,29 @@ async function startServer() {
 
   app.post('/api/orders/:id/pay', async (req, res) => {
     const { id } = req.params;
+    
     if (previewOrders.has(id)) {
-      previewOrders.get(id).status = 'da_thanh_toan';
+      const order = previewOrders.get(id);
+      if (order.status !== 'duoc_duyet' && order.status !== 'approved') {
+        return res.status(400).json({ success: false, error: 'Chỉ đơn hàng đã được phê duyệt mới có thể thanh toán.' });
+      }
+      order.status = 'da_thanh_toan';
     }
+
     try {
       const { adminDb, SERVER_SECRET } = await import('./server/firebaseAdmin.js');
       const docId = id.replace('#', '');
-      await adminDb.collection('orders').doc(docId).update({
+      const docRef = adminDb.collection('orders').doc(docId);
+      const docSnap = await docRef.get();
+      
+      if (docSnap.exists) {
+        const data = docSnap.data();
+        if (data && data.status !== 'duoc_duyet' && data.status !== 'approved') {
+          return res.status(400).json({ success: false, error: 'Chỉ đơn hàng đã được phê duyệt mới có thể thanh toán.' });
+        }
+      }
+
+      await docRef.update({
         status: 'da_thanh_toan',
         serverSecret: SERVER_SECRET,
       });

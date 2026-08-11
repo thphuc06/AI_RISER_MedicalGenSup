@@ -21,6 +21,7 @@ export class LiveAgentClient {
   private isRecording = false;
   private shouldReconnect = false;
   private reconnectTimer: any = null;
+  private activeAudioSources: AudioBufferSourceNode[] = [];
 
   constructor(private callbacks: LiveAgentMessageCallbacks, private readonly tokenProvider: () => Promise<string>) {}
 
@@ -75,7 +76,7 @@ export class LiveAgentClient {
         } else if (msg.type === 'escalate') {
           this.callbacks.onEscalate?.(msg.reason);
         } else if (msg.type === 'interrupted') {
-          this.nextPlaybackStartTime = 0;
+          this.clearAudioQueue();
           this.callbacks.onInterrupted?.();
         } else if (msg.type === 'error') {
           this.callbacks.onError?.(msg.message);
@@ -110,6 +111,23 @@ export class LiveAgentClient {
     }, 2500);
   }
 
+  public clearAudioQueue() {
+    for (const source of this.activeAudioSources) {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch {
+        // Source may already have finished or stopped
+      }
+    }
+    this.activeAudioSources = [];
+    if (this.audioCtxOutput) {
+      this.nextPlaybackStartTime = this.audioCtxOutput.currentTime;
+    } else {
+      this.nextPlaybackStartTime = 0;
+    }
+  }
+
   public prepareAudioOutput() {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -125,6 +143,7 @@ export class LiveAgentClient {
   }
 
   public stopAudioOutput() {
+    this.clearAudioQueue();
     try {
       if (this.audioCtxOutput) {
         this.audioCtxOutput.suspend();
@@ -134,10 +153,10 @@ export class LiveAgentClient {
     } catch (err) {
       console.warn('[LiveAgentClient] Error stopping audio output:', err);
     }
-    this.nextPlaybackStartTime = 0;
   }
 
   public sendConfirmedText(text: string) {
+    this.clearAudioQueue();
     this.prepareAudioOutput();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(
@@ -151,6 +170,7 @@ export class LiveAgentClient {
 
   public async startRecording() {
     if (this.isRecording) return;
+    this.clearAudioQueue();
 
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx || !AudioCtx.prototype || !('audioWorklet' in AudioCtx.prototype)) {
@@ -283,6 +303,11 @@ export class LiveAgentClient {
       const startTime = Math.max(now, this.nextPlaybackStartTime);
       source.start(startTime);
       this.nextPlaybackStartTime = startTime + audioBuffer.duration;
+
+      this.activeAudioSources.push(source);
+      source.onended = () => {
+        this.activeAudioSources = this.activeAudioSources.filter((s) => s !== source);
+      };
     } catch (err) {
       console.error('[LiveAgentClient] Error playing audio chunk:', err);
     }
@@ -310,6 +335,7 @@ export class LiveAgentClient {
       this.reconnectTimer = null;
     }
     this.stopRecording();
+    this.clearAudioQueue();
     if (this.audioCtxOutput) {
       this.audioCtxOutput.close();
       this.audioCtxOutput = null;

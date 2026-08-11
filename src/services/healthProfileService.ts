@@ -3,6 +3,7 @@ import type { User } from 'firebase/auth';
 import { db } from '../firebase';
 
 export interface HealthProfile {
+  ho_ten?: string;
   benh_nen?: string;
   di_ung?: string;
   nhom_tuoi?: string;

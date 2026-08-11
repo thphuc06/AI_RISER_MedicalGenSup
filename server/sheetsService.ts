@@ -1,5 +1,8 @@
 import Papa from 'papaparse';
 import type { Contraindication, MaxDose, Product, RedFlag, SafetyData } from './domain.js';
+import { syncSheetsToPostgres } from './syncService.js';
+import { db } from '../src/db/index.js';
+import { products, contraindications, maxDoses, redFlags } from '../src/db/schema.js';
 
 const SPREADSHEET_ID = process.env.PHARMACY_SPREADSHEET_ID || '1qDdFaMA-4KB7bqiGR-WqjfRN6xmHQtb_BQx3DZXtgak';
 const FETCH_TIMEOUT_MS = Number(process.env.SHEETS_FETCH_TIMEOUT_MS || 30_000);
@@ -120,6 +123,18 @@ export class SheetsService {
         redFlags: mapRedFlags(parseSheetCsv('Red_Flags', redFlagsCsv)),
         isHealthy: true, isLoading: false, lastSuccessfulRefresh: new Date(), lastError: null,
       };
+
+      // Synchronize fetched data to PostgreSQL database asynchronously
+      try {
+        await syncSheetsToPostgres({
+          products: this.state.products,
+          contraindications: this.state.contraindications,
+          maxDoses: this.state.maxDoses,
+          redFlags: this.state.redFlags,
+        });
+      } catch (syncErr) {
+        console.error('[SheetsService] Failed to sync data to PostgreSQL, but in-memory cache is active:', syncErr);
+      }
     } catch (error) {
       this.state.isLoading = false;
       this.state.lastError = error instanceof Error ? error.message : String(error);
@@ -137,10 +152,70 @@ export class SheetsService {
 const service = new SheetsService();
 let refreshTimer: NodeJS.Timeout | null = null;
 
+export async function reloadSafetyDataFromPostgres(): Promise<boolean> {
+  try {
+    const dbProducts = await db.select().from(products);
+    const dbContraindications = await db.select().from(contraindications);
+    const dbMaxDoses = await db.select().from(maxDoses);
+    const dbRedFlags = await db.select().from(redFlags);
+
+    const safetyData = {
+      products: dbProducts.map(p => ({
+        sku: p.sku,
+        ten_san_pham: p.ten_san_pham,
+        hoat_chat: p.hoat_chat,
+        ham_luong_mg: p.ham_luong_mg || '',
+        dang_bao_che: p.dang_bao_che || '',
+        nhom: p.nhom || '',
+        rx_status: p.rx_status,
+        gia: p.gia,
+        ton_kho: p.ton_kho,
+        chi_dinh_ngan: p.chi_dinh_ngan,
+        cach_dung_co_ban: p.cach_dung_co_ban,
+      })),
+      contraindications: dbContraindications.map(c => ({
+        hoat_chat: c.hoat_chat,
+        dieu_kien: c.dieu_kien,
+        loai: c.loai || '',
+        muc_do: c.muc_do || '',
+        ly_do_ngan_gon: c.ly_do_ngan_gon || '',
+      })),
+      maxDoses: dbMaxDoses.map(md => ({
+        hoat_chat: md.hoat_chat,
+        nhom_tuoi: md.nhom_tuoi,
+        max_mg_ngay: md.max_mg_ngay,
+      })),
+      redFlags: dbRedFlags.map(rf => ({
+        tu_khoa_trieu_chung: rf.tu_khoa_trieu_chung,
+        muc_do: rf.muc_do || '',
+        hanh_dong: rf.hanh_dong || '',
+        thong_diep: rf.thong_diep || '',
+      })),
+      isHealthy: true,
+      isLoading: false,
+      lastSuccessfulRefresh: new Date(),
+      lastRefreshAttempt: new Date(),
+      lastError: null,
+      filteredRxCount: 0,
+    };
+
+    overrideSafetyData(safetyData);
+    console.log('[Postgres-Sync] In-memory safety data reloaded from Postgres successfully!');
+    return true;
+  } catch (error) {
+    console.error('[Postgres-Sync] Failed to reload safety data from Postgres:', error);
+    return false;
+  }
+}
+
 export async function startPeriodicRefresh(intervalMinutes = 10): Promise<void> {
-  await service.refresh();
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => { void service.refresh(); }, intervalMinutes * 60 * 1000);
+  const loaded = await reloadSafetyDataFromPostgres();
+  if (!loaded || getProducts().length === 0) {
+    console.log('[SheetsService] Postgres database is empty or failed to load. Seeding from Google Sheets...');
+    await service.refresh();
+  } else {
+    console.log('[SheetsService] Successfully initialized safety data cache directly from Postgres database!');
+  }
 }
 export const loadAllSheets = () => service.refresh();
 export const getProducts = () => service.getSafetyData().products;

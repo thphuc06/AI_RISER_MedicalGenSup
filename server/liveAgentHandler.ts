@@ -4,8 +4,9 @@ import { verifyFirebaseToken } from './auth.js';
 import { HealthProfileConfirmationGate, TranscriptActionGate } from './actionGate.js';
 import { UtteranceManager } from './utteranceManager.js';
 import { mutateCart, readCart, readHealthProfile, saveConfirmedTranscript, saveHealthProfile, type CartOperation } from './cartService.js';
-import { mapToAgeGroup } from './safetyService.js';
-import { getCacheStatus, getProducts, getValidAgeGroups, getValidConditions } from './sheetsService.js';
+import { getContraindicationsForQuery, getMaxDoseForQuery, mapToAgeGroup } from './safetyService.js';
+import { getCacheStatus, getProducts, getSafetyData, getValidAgeGroups, getValidConditions } from './sheetsService.js';
+import { searchProductsSemantic, searchContraindicationsSemantic } from './semanticSearch.js';
 
 interface ClientMessage { type: 'authenticate' | 'audio_start' | 'audio_input' | 'audio_end' | 'confirm_transcript'; idToken?: string; audio?: string; text?: string }
 
@@ -26,14 +27,41 @@ const tools: FunctionDeclaration[] = [
     ['trieu_chung']
   ),
   declaration('get_health_profile', 'Đọc hồ sơ của người dùng đang xác thực.', {}, []),
-  declaration('update_health_profile', 'Đề xuất cập nhật hồ sơ; lần gọi đầu không ghi dữ liệu.', { truong: stringProperty('benh_nen, doi_tuong, di_ung hoặc nhom_tuoi'), gia_tri: stringProperty('Giá trị cần đề xuất') }, ['truong', 'gia_tri']),
+  declaration(
+    'update_health_profile',
+    'Cập nhật hồ sơ sức khỏe. Nếu là độ tuổi/số tuổi (ví dụ: "16 tuổi", "30"), hệ thống sẽ lưu số tuổi tự nhiên và tự động quy đổi ra nhóm tuổi tương ứng.',
+    {
+      truong: stringProperty('trường cần cập nhật: do_tuoi, nhom_tuoi, benh_nen, di_ung, doi_tuong'),
+      gia_tri: stringProperty('Giá trị cần cập nhật (ví dụ: "16 tuổi", "Đau dạ dày", "Dị ứng Aspirin")')
+    },
+    ['truong', 'gia_tri']
+  ),
+  declaration(
+    'get_contraindications',
+    'Tra cứu quy tắc chống chỉ định (bệnh nền, thai kỳ, nhóm tuổi, đối tượng) theo tên hoạt chất, SKU sản phẩm, hoặc theo bệnh nền/triệu chứng của bệnh nhân.',
+    {
+      hoat_chat: stringProperty('Tên hoạt chất cần kiểm tra (ví dụ: paracetamol, ibuprofen, aspirin, pseudoephedrine...)'),
+      sku: stringProperty('Mã SKU sản phẩm (nếu muốn kiểm tra sản phẩm cụ thể)'),
+      benh_nen_hoac_trieu_chung: stringProperty('Bệnh nền hoặc triệu chứng của bệnh nhân để tìm kiếm quy tắc chống chỉ định tương đồng ngữ nghĩa bằng pgvector'),
+    },
+    []
+  ),
+  declaration(
+    'get_max_dose',
+    'Tra cứu giới hạn liều tối đa hàng ngày (mg/ngày) theo hoạt chất và nhóm tuổi/số tuổi từ cơ sở dữ liệu quy tắc liều lượng.',
+    {
+      hoat_chat: stringProperty('Tên hoạt chất (ví dụ: paracetamol, ibuprofen, loratadine)'),
+      do_tuoi_hoac_nhom_tuoi: stringProperty('Số tuổi (ví dụ: 16, 65) hoặc nhóm tuổi (tre_em, nguoi_lon, nguoi_cao_tuoi)'),
+    },
+    ['hoat_chat']
+  ),
   declaration('add_to_cart', 'Thêm OTC qua cổng an toàn phía server.', { sku: stringProperty('SKU chính xác'), so_luong: numberProperty('Số lượng'), ly_do_va_bang_chung: stringProperty('Lý do và bằng chứng bắt buộc') }, ['sku', 'so_luong', 'ly_do_va_bang_chung']),
   declaration('remove_from_cart', 'Xóa SKU qua cổng an toàn phía server.', { sku: stringProperty('SKU chính xác') }, ['sku']),
   declaration('escalate_to_pharmacist', 'Chuyển cho dược sĩ.', { ly_do: stringProperty('Lý do') }, ['ly_do']),
 ];
 
 function isProfileField(field: string): boolean {
-  return ['benh_nen', 'doi_tuong', 'di_ung', 'nhom_tuoi', 'do_tuoi', 'ghi_chu_suckhoe'].includes(field);
+  return ['benh_nen', 'doi_tuong', 'di_ung', 'nhom_tuoi', 'do_tuoi', 'ghi_chu_suckhoe', 'conditions', 'allergies', 'age'].includes(field);
 }
 
 export function setupLiveAgentWebSocket(wss: WebSocketServer) {
@@ -115,17 +143,20 @@ ${initialProfileSummary}
   (2) Tiền sử dị ứng (thuốc/thức ăn).
   (3) Bệnh nền hoặc Tình trạng thai kỳ / cho con bú.
 - Nếu các thông tin trên trong hồ sơ còn 'Chưa rõ' hoặc chưa được người dùng nêu, bạn BẮT BUỘC PHẢI HỎI NGƯỜI DÙNG XÁC NHẬN/CUNG CẤP TRƯỚC KHI ĐỀ XUẤT BẤT KỲ SẢN PHẨM NÀO.
-- Khi người dùng cung cấp thông tin mới (ví dụ: 'tôi 30 tuổi', 'tôi bị dị ứng aspirin'), hãy chủ động gọi công cụ \`update_health_profile\` để cập nhật hồ sơ cho người dùng.
+- Khi người dùng cung cấp thông tin mới (ví dụ: 'tôi 16 tuổi', 'tôi 30 tuổi', 'tôi bị dị ứng aspirin', 'tôi bị đau dạ dày'), hãy chủ động gọi công cụ 'update_health_profile' để cập nhật hồ sơ. Hệ thống sẽ lưu chính xác tuổi (ví dụ: "16 tuổi") và tự động quy đổi ra nhom_tuoi tương ứng (tre_em, nguoi_lon, nguoi_cao_tuoi).
 - Hỏi tối đa 1-2 câu ngắn gọn làm rõ triệu chứng và thông tin an toàn.
+- Bạn có thể chủ động sử dụng công cụ 'get_contraindications' và 'get_max_dose' để kiểm tra quy tắc an toàn thuốc, chống chỉ định và liều tối đa hàng ngày.
 - Luôn giải thích liều dùng đúng theo nhãn sản phẩm (cach_dung_co_ban), không tự suy diễn.
 - Khi gặp câu hỏi phức tạp hoặc không chắc chắn về an toàn, hãy gọi escalate_to_pharmacist.
 
 ==================================================
 4. QUY TẮC SỬ DỤNG CÔNG CỤ (TOOLS):
 - search_products: Suy luận ngữ nghĩa giữa triệu chứng đã xác nhận và chi_dinh_ngan.
-- update_health_profile: Đề xuất cập nhật hồ sơ; lần đầu gọi chỉ gửi đề xuất cho người dùng xác nhận.
-- Chỉ gọi add_to_cart, remove_from_cart hay update_health_profile sau khi server xác nhận người dùng đã đồng ý transcript.
-- Mã điều kiện hợp lệ: [${validConditions.join(', ')}]. Nhóm tuổi hợp lệ: [${validAgeGroups.join(', ')}].`;
+- get_contraindications: Tra cứu chống chỉ định của hoạt chất đối với các bệnh nền/thai kỳ/đối tượng đặc biệt từ cơ sở dữ liệu.
+- get_max_dose: Tra cứu giới hạn liều dùng tối đa mg/ngày theo hoạt chất và độ tuổi hoặc nhóm tuổi.
+- update_health_profile: Cập nhật thông tin hồ sơ sức khỏe.
+- Chỉ gọi add_to_cart, remove_from_cart hay update_health_profile sau khi người dùng đồng ý/yêu cầu trong cuộc trò chuyện.
+- Mã điều kiện gợi ý: [${validConditions.join(', ')}]. Nhóm tuổi gợi ý: [${validAgeGroups.join(', ')}].`;
 
   let isLiveSessionOpen = true;
 
@@ -184,13 +215,44 @@ ${initialProfileSummary}
           const args = (call.args || {}) as Record<string, unknown>;
           let result: unknown = { success: false, message: 'Unknown tool' };
           if (name === 'search_products') {
-            const status = getCacheStatus();
-            result = status.isHealthy ? {
-              success: true,
-              matching_strategy: 'Model semantic reasoning over chi_dinh_ngan; exact keyword matching is reserved for Red_Flags.',
-              loc_theo_doi_tuong: String(args.loc_theo_doi_tuong || ''),
-              products: getProducts().map((product) => ({ sku: product.sku, ten_san_pham: product.ten_san_pham, hoat_chat: product.hoat_chat, ham_luong_mg: product.ham_luong_mg, dang_bao_che: product.dang_bao_che, nhom: product.nhom, gia: product.gia, ton_kho: product.ton_kho, chi_dinh_ngan: product.chi_dinh_ngan, cach_dung_co_ban: product.cach_dung_co_ban })),
-            } : { success: false, message: 'Dữ liệu an toàn đang không khỏe; không trả catalog.' };
+            const trieu_chung = String(args.trieu_chung || '').trim();
+            if (!trieu_chung) {
+              result = { success: false, message: 'Vui lòng cung cấp triệu chứng cần tìm kiếm.' };
+            } else {
+              try {
+                // Call pgvector semantic search over products
+                const matchedProducts = await searchProductsSemantic(trieu_chung, 6);
+                result = {
+                  success: true,
+                  matching_strategy: 'Semantic search using pgvector (text-embedding-004) over product names and indications',
+                  trieu_chung,
+                  loc_theo_doi_tuong: String(args.loc_theo_doi_tuong || ''),
+                  products: matchedProducts.map((product) => ({
+                    sku: product.sku,
+                    ten_san_pham: product.ten_san_pham,
+                    hoat_chat: product.hoat_chat,
+                    ham_luong_mg: product.ham_luong_mg,
+                    dang_bao_che: product.dang_bao_che,
+                    nhom: product.nhom,
+                    gia: product.gia,
+                    ton_kho: product.ton_kho,
+                    chi_dinh_ngan: product.chi_dinh_ngan,
+                    cach_dung_co_ban: product.cach_dung_co_ban,
+                    distance: (product as any).distance
+                  })),
+                };
+              } catch (searchErr) {
+                console.error('[search_products tool] Semantic search failed:', searchErr);
+                // Fallback to in-memory
+                result = {
+                  success: true,
+                  matching_strategy: 'In-memory fallback (semantic search failed)',
+                  products: getProducts().slice(0, 15).map((product) => ({
+                    sku: product.sku, ten_san_pham: product.ten_san_pham, hoat_chat: product.hoat_chat, ham_luong_mg: product.ham_luong_mg, dang_bao_che: product.dang_bao_che, nhom: product.nhom, gia: product.gia, ton_kho: product.ton_kho, chi_dinh_ngan: product.chi_dinh_ngan, cach_dung_co_ban: product.cach_dung_co_ban
+                  })),
+                };
+              }
+            }
           } else if (name === 'get_health_profile') {
             try {
               const profile = await readHealthProfile(userId);
@@ -198,6 +260,84 @@ ${initialProfileSummary}
             } catch (error) {
               result = { success: false, unsafe: true, message: `Không thể đọc hồ sơ: ${error instanceof Error ? error.message : String(error)}` };
             }
+          } else if (name === 'get_contraindications') {
+            const hoat_chat = String(args.hoat_chat || '').trim();
+            const sku = String(args.sku || '').trim();
+            const benh_nen_hoac_trieu_chung = String(args.benh_nen_hoac_trieu_chung || '').trim();
+
+            let rules: any[] = [];
+            let strategy = 'Active ingredient / SKU lookup from safety rules';
+
+            if (benh_nen_hoac_trieu_chung) {
+              strategy = `Semantic search using pgvector (text-embedding-004) for condition matching: "${benh_nen_hoac_trieu_chung}"`;
+              try {
+                // Perform semantic query over contraindications
+                const matchedContra = await searchContraindicationsSemantic(benh_nen_hoac_trieu_chung, 8);
+                rules = matchedContra;
+
+                // Optionally filter semantically matched rules if hoat_chat or SKU is specified
+                if (hoat_chat || sku) {
+                  let targetIngredients: string[] = [];
+                  if (sku) {
+                    const product = getProducts().find(p => p.sku.toLowerCase() === sku.toLowerCase());
+                    if (product) {
+                      const ingredients = (product.hoat_chat || '').split(';').map(i => i.trim().toLowerCase());
+                      targetIngredients.push(...ingredients);
+                    }
+                  }
+                  if (hoat_chat) {
+                    targetIngredients.push(...hoat_chat.split(';').map(i => i.trim().toLowerCase()));
+                  }
+
+                  if (targetIngredients.length > 0) {
+                    rules = rules.filter(r => {
+                      const ruleIng = (r.hoat_chat || '').toLowerCase();
+                      return targetIngredients.some(t => t === ruleIng || t.includes(ruleIng) || ruleIng.includes(t));
+                    });
+                  }
+                }
+              } catch (semErr) {
+                console.error('[get_contraindications tool] Semantic search failed, falling back to standard lookup:', semErr);
+              }
+            }
+
+            // If no semantic query was performed or if rules are still empty, fall back to the standard lookup
+            if (rules.length === 0) {
+              const safetyData = getSafetyData();
+              rules = getContraindicationsForQuery({ hoat_chat, sku }, safetyData);
+            }
+
+            result = {
+              success: true,
+              matching_strategy: strategy,
+              total_matched: rules.length,
+              contraindications: rules.map((r) => ({
+                hoat_chat: r.hoat_chat,
+                dieu_kien: r.dieu_kien,
+                loai: r.loai,
+                muc_do: r.muc_do,
+                ly_do_ngan_gon: r.ly_do_ngan_gon,
+                distance: r.distance
+              })),
+            };
+          } else if (name === 'get_max_dose') {
+            const safetyData = getSafetyData();
+            const rules = getMaxDoseForQuery(
+              {
+                hoat_chat: String(args.hoat_chat || ''),
+                do_tuoi_hoac_nhom_tuoi: (args.do_tuoi_hoac_nhom_tuoi as string | number) || '',
+              },
+              safetyData
+            );
+            result = {
+              success: true,
+              total_matched: rules.length,
+              max_doses: rules.map((r) => ({
+                hoat_chat: r.hoat_chat,
+                nhom_tuoi: r.nhom_tuoi,
+                max_mg_ngay: r.max_mg_ngay,
+              })),
+            };
           } else if (name === 'update_health_profile') {
             const field = String(args.truong || '').trim();
             const value = String(args.gia_tri || '').trim();
@@ -205,7 +345,7 @@ ${initialProfileSummary}
               result = { success: false, message: 'Trường hoặc giá trị hồ sơ không hợp lệ.' };
             } else {
               const updates: Record<string, string> = { [field]: value };
-              if (['do_tuoi', 'nhom_tuoi'].includes(field)) {
+              if (['do_tuoi', 'nhom_tuoi', 'age'].includes(field)) {
                 const mappedAge = mapToAgeGroup(value);
                 if (mappedAge.nhom_tuoi) updates.nhom_tuoi = mappedAge.nhom_tuoi;
                 if (mappedAge.do_tuoi) updates.do_tuoi = mappedAge.do_tuoi;
@@ -214,7 +354,7 @@ ${initialProfileSummary}
               safeSend({ type: 'health_profile_updated', truong: field, gia_tri: value });
               result = {
                 success: true,
-                message: `Đã tự động cập nhật hồ sơ sức khỏe: ${field} thành "${value}".`
+                message: `Đã tự động cập nhật hồ sơ sức khỏe: ${field} thành "${value}".${updates.nhom_tuoi ? ` (Nhóm tuổi phân loại: ${updates.nhom_tuoi})` : ''}`
               };
             }
           } else if (name === 'add_to_cart') {
@@ -264,6 +404,7 @@ ${initialProfileSummary}
       if (message.type === 'audio_start') {
         utteranceManager.startUtterance();
         actionGate.startListening();
+        safeSend({ type: 'interrupted' });
         liveSession.sendRealtimeInput({ activityStart: {} });
       } else if (message.type === 'audio_input' && message.audio) {
         liveSession.sendRealtimeInput({ audio: { data: message.audio, mimeType: 'audio/pcm;rate=16000' } });

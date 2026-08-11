@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { PharmacistDashboard } from './components/PharmacistDashboard';
 import { VoiceShoppingCustomer } from './components/VoiceShoppingCustomer';
+import { AdminDashboard } from './components/AdminDashboard';
 import { INITIAL_ORDERS } from './data/mockData';
 import { Order, CartItem } from './types';
 import { resolveAppView, type AppView } from './routing';
@@ -17,7 +18,7 @@ export default function App() {
   }, []);
 
   const navigateTo = (view: AppView) => {
-    const url = view === 'pharmacist' ? '/duoc-si' : view === 'split' ? '/?view=split' : '/';
+    const url = view === 'pharmacist' ? '/duoc-si' : view === 'admin' ? '/admin' : view === 'split' ? '/?view=split' : '/';
     window.history.pushState({}, '', url);
     setViewMode(view);
   };
@@ -78,7 +79,7 @@ export default function App() {
     setOrders((prev) =>
       prev.map((o) => {
         if (o.id === id) {
-          const updated = { ...o, status: 'approved' as const };
+          const updated = { ...o, status: 'duoc_duyet' as const };
           return updated;
         }
         return o;
@@ -262,6 +263,18 @@ export default function App() {
             <span className="material-symbols-outlined text-sm">view_column</span>
             <span>Chế độ Hai Màn hình</span>
           </button>
+
+          <button
+            onClick={() => navigateTo('admin')}
+            className={`px-3 py-1.5 rounded-md font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+              viewMode === 'admin'
+                ? 'bg-[#00685c] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <span className="material-symbols-outlined text-sm">settings_applications</span>
+            <span>Quản trị Hệ thống</span>
+          </button>
         </div>
       </header>
 
@@ -286,6 +299,12 @@ export default function App() {
               onSendOrderToPharmacist={handleCustomerSendOrder}
               onSwitchToPharmacistView={() => navigateTo('pharmacist')}
             />
+          </div>
+        )}
+
+        {viewMode === 'admin' && (
+          <div className="h-[calc(100vh-42px)] w-full overflow-hidden flex">
+            <AdminDashboard />
           </div>
         )}
 
