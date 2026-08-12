@@ -38,9 +38,12 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
   const [newSymptoms, setNewSymptoms] = useState('');
   const [newMedicalHistory, setNewMedicalHistory] = useState('Cao huyết áp');
 
-  // Tier Filter and Sort State
+  // Tier Filter, Date Filter, and Sort State
   const [tierFilter, setTierFilter] = useState<'ALL' | 'TIER_1_CALL' | 'TIER_2_STANDARD' | 'TIER_3_FAST'>('ALL');
   const [sortBy, setSortBy] = useState<'RISK_DESC' | 'NEWEST'>('RISK_DESC');
+  const [pharmDateFilter, setPharmDateFilter] = useState<string>('');
+  const [pharmPage, setPharmPage] = useState<number>(1);
+  const PHARM_PER_PAGE = 2;
 
   // Timer simulation for selected order
   const [timerSeconds, setTimerSeconds] = useState<number>(195);
@@ -102,9 +105,31 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
       if (!matchesSearch) return false;
 
       const tier = getOrderTier(o);
-      if (tierFilter === 'TIER_1_CALL') return tier === 'TIER_1_CALL';
-      if (tierFilter === 'TIER_2_STANDARD') return tier === 'TIER_2_STANDARD';
-      if (tierFilter === 'TIER_3_FAST') return tier === 'TIER_3_FAST';
+      if (tierFilter === 'TIER_1_CALL' && tier !== 'TIER_1_CALL') return false;
+      if (tierFilter === 'TIER_2_STANDARD' && tier !== 'TIER_2_STANDARD') return false;
+      if (tierFilter === 'TIER_3_FAST' && tier !== 'TIER_3_FAST') return false;
+
+      if (pharmDateFilter) {
+        const rawDate = o.timestamp || o.createdAt || '';
+        if (rawDate) {
+          if (typeof rawDate === 'string' && rawDate.includes('T')) {
+            if (rawDate.split('T')[0] !== pharmDateFilter) return false;
+          } else if (typeof rawDate === 'string' && rawDate.includes('-') && rawDate.length >= 10) {
+            if (rawDate.substring(0, 10) !== pharmDateFilter) return false;
+          } else {
+            try {
+              const d = new Date(rawDate);
+              if (!isNaN(d.getTime())) {
+                const year = d.getFullYear();
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                if (`${year}-${month}-${day}` !== pharmDateFilter) return false;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
       return true;
     })
     .sort((a, b) => {
@@ -115,6 +140,10 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
       const tB = b.timestamp || '';
       return tB.localeCompare(tA);
     });
+
+  const totalPharmPages = Math.ceil(filteredOrders.length / PHARM_PER_PAGE) || 1;
+  const currentPharmPageClamped = Math.min(pharmPage, totalPharmPages);
+  const paginatedOrders = filteredOrders.slice((currentPharmPageClamped - 1) * PHARM_PER_PAGE, currentPharmPageClamped * PHARM_PER_PAGE);
 
   const handleApprove = () => {
     if (!selectedOrder) return;
@@ -397,6 +426,47 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
                   </button>
                 </div>
 
+                {/* Date Filter Bar */}
+                <div className="flex items-center justify-between gap-1.5 bg-white p-2 rounded-lg border border-gray-300 text-[11px]">
+                  <div className="flex items-center gap-1 flex-1">
+                    <span className="material-symbols-outlined text-[#00685c] text-sm shrink-0">calendar_month</span>
+                    <span className="font-bold text-gray-700 text-[10px] shrink-0">Ngày:</span>
+                    <input
+                      type="date"
+                      value={pharmDateFilter}
+                      onChange={(e) => {
+                        setPharmDateFilter(e.target.value);
+                        setPharmPage(1);
+                      }}
+                      className="bg-emerald-50/50 border border-emerald-300 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[#00685c] focus:outline-none w-full max-w-[110px]"
+                    />
+                  </div>
+                  {pharmDateFilter ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPharmDateFilter('');
+                        setPharmPage(1);
+                      }}
+                      className="text-red-600 hover:text-red-800 text-[10px] font-bold underline cursor-pointer shrink-0"
+                    >
+                      Xóa
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const todayStr = new Date().toISOString().split('T')[0];
+                        setPharmDateFilter(todayStr);
+                        setPharmPage(1);
+                      }}
+                      className="bg-emerald-100 text-emerald-800 hover:bg-emerald-200 text-[9px] font-bold px-1.5 py-0.5 rounded cursor-pointer shrink-0"
+                    >
+                      Hôm nay
+                    </button>
+                  )}
+                </div>
+
                 {/* Sort Option */}
                 <div className="flex items-center justify-between text-[11px] pt-1">
                   <span className="text-gray-500 font-medium">Sắp xếp:</span>
@@ -426,7 +496,7 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
                 {filteredOrders.length === 0 ? (
                   <div className="p-6 text-center text-[#3e4946] text-xs">Không tìm thấy đơn hàng trong phân luồng này</div>
                 ) : (
-                  filteredOrders.map((ord) => {
+                  paginatedOrders.map((ord) => {
                     const isSelected = ord.id === selectedOrderId;
                     const score = getOrderRiskScore(ord);
                     const tier = getOrderTier(ord);
@@ -501,6 +571,32 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
                   })
                 )}
               </div>
+
+              {filteredOrders.length > 0 && (
+                <div className="p-2.5 bg-white border-t border-[#bdc9c5] flex items-center justify-between text-[11px] shrink-0">
+                  <span className="font-semibold text-gray-600">
+                    Trang <strong className="text-[#00685c]">{currentPharmPageClamped}</strong> / <strong className="text-gray-900">{totalPharmPages}</strong> ({filteredOrders.length} đơn)
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={currentPharmPageClamped <= 1}
+                      onClick={() => setPharmPage((p) => Math.max(1, p - 1))}
+                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded font-bold disabled:opacity-40 disabled:cursor-not-allowed text-[10px] cursor-pointer"
+                    >
+                      ◄ Trước
+                    </button>
+                    <button
+                      type="button"
+                      disabled={currentPharmPageClamped >= totalPharmPages}
+                      onClick={() => setPharmPage((p) => Math.min(totalPharmPages, p + 1))}
+                      className="px-2 py-0.5 bg-[#00685c] hover:bg-[#005047] text-white rounded font-bold disabled:opacity-40 disabled:cursor-not-allowed text-[10px] cursor-pointer"
+                    >
+                      Sau ►
+                    </button>
+                  </div>
+                </div>
+              )}
             </aside>
           )}
 

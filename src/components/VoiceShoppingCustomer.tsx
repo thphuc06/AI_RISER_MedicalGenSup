@@ -240,6 +240,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
   const [myOrders, setMyOrders] = useState<any[]>([]);
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [prescFilter, setPrescFilter] = useState<'all' | 'cho_duyet' | 'duoc_duyet' | 'da_huy' | 'da_thanh_toan'>('all');
+  const [prescDateFilter, setPrescDateFilter] = useState<string>('');
+  const [prescPage, setPrescPage] = useState<number>(1);
+  const PRESC_PER_PAGE = 2;
 
   const fetchMyOrders = async () => {
     if (!user) return;
@@ -1169,10 +1172,9 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   <button
                     onClick={() => setCurrentProductPage((prev) => Math.min(prev + 1, totalProductPages))}
                     disabled={currentProductPage === totalProductPages}
-                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-md font-semibold text-[11px] transition-colors flex items-center gap-0.5 cursor-pointer"
+                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-md font-semibold text-xs flex items-center gap-0.5"
                   >
-                    Sau
-                    <span className="material-symbols-outlined text-xs">chevron_right</span>
+                    Trang sau <span className="material-symbols-outlined text-xs">chevron_right</span>
                   </button>
                 </div>
               </div>
@@ -1182,19 +1184,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
 
         {/* Prescriptions Tab */}
         {activeTab === 'prescriptions' && (
-          <div className="p-4 max-w-sm mx-auto space-y-4 pb-16 animate-fade-in">
-            <div className="flex justify-between items-center">
-              <h2 className="text-lg font-bold text-[#00685c]">Đơn thuốc & Lịch sử</h2>
-              <button
-                onClick={fetchMyOrders}
-                disabled={isLoadingOrders}
-                className="text-xs font-semibold text-[#00685c] hover:underline flex items-center gap-1 cursor-pointer"
-              >
-                <span className={`material-symbols-outlined text-xs ${isLoadingOrders ? 'animate-spin' : ''}`}>refresh</span>
-                Làm mới
-              </button>
-            </div>
-
+          <div className="flex-1 flex flex-col p-4 bg-[#ebefec] overflow-y-auto space-y-3.5">
             {/* Status Tabs/Pills */}
             <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none border-b border-gray-100 -mx-1 px-1">
               {[
@@ -1221,7 +1211,10 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => setPrescFilter(tab.id as any)}
+                    onClick={() => {
+                      setPrescFilter(tab.id as any);
+                      setPrescPage(1);
+                    }}
                     className={`px-2.5 py-1.5 rounded-full text-[10px] font-bold shrink-0 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1 ${
                       prescFilter === tab.id
                         ? 'bg-[#00685c] text-white'
@@ -1235,6 +1228,47 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   </button>
                 );
               })}
+            </div>
+
+            {/* Date Filter Bar */}
+            <div className="flex items-center justify-between gap-2 bg-white p-2.5 rounded-xl border border-[#bdc9c5] text-xs shadow-2xs">
+              <div className="flex items-center gap-1.5 flex-1">
+                <span className="material-symbols-outlined text-[#00685c] text-base shrink-0">calendar_month</span>
+                <span className="font-bold text-gray-800 text-[11px] shrink-0">Lọc ngày:</span>
+                <input
+                  type="date"
+                  value={prescDateFilter}
+                  onChange={(e) => {
+                    setPrescDateFilter(e.target.value);
+                    setPrescPage(1);
+                  }}
+                  className="bg-emerald-50/50 border border-emerald-300 rounded-lg px-2 py-1 text-xs font-semibold text-[#00685c] focus:outline-none focus:ring-1 focus:ring-[#00685c] w-full max-w-[130px]"
+                />
+              </div>
+              {prescDateFilter ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPrescDateFilter('');
+                    setPrescPage(1);
+                  }}
+                  className="text-red-600 hover:text-red-800 text-[11px] font-bold underline cursor-pointer shrink-0"
+                >
+                  Xóa lọc ngày
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const todayStr = new Date().toISOString().split('T')[0];
+                    setPrescDateFilter(todayStr);
+                    setPrescPage(1);
+                  }}
+                  className="bg-emerald-100 text-emerald-800 hover:bg-emerald-200 text-[10px] font-bold px-2 py-1 rounded-md transition-colors cursor-pointer shrink-0"
+                >
+                  Hôm nay
+                </button>
+              )}
             </div>
 
             {isLoadingOrders && myOrders.length === 0 ? (
@@ -1256,11 +1290,40 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 const isPaid = order.status === 'da_thanh_toan';
                 const isCancelled = order.status === 'da_huy' || order.status === 'rejected';
 
-                if (prescFilter === 'all') return true;
-                if (prescFilter === 'cho_duyet') return isPending;
-                if (prescFilter === 'duoc_duyet') return isApproved;
-                if (prescFilter === 'da_huy') return isCancelled;
-                if (prescFilter === 'da_thanh_toan') return isPaid;
+                let statusMatch = true;
+                if (prescFilter === 'cho_duyet') statusMatch = isPending;
+                else if (prescFilter === 'duoc_duyet') statusMatch = isApproved;
+                else if (prescFilter === 'da_huy') statusMatch = isCancelled;
+                else if (prescFilter === 'da_thanh_toan') statusMatch = isPaid;
+
+                if (!statusMatch) return false;
+
+                // Date Filter logic
+                if (prescDateFilter) {
+                  const rawDateStr = order.createdAt || order.timestamp || '';
+                  if (rawDateStr) {
+                    if (typeof rawDateStr === 'string' && rawDateStr.includes('T')) {
+                      const orderDate = rawDateStr.split('T')[0];
+                      if (orderDate !== prescDateFilter) return false;
+                    } else if (typeof rawDateStr === 'string' && rawDateStr.includes('-') && rawDateStr.length >= 10) {
+                      const orderDate = rawDateStr.substring(0, 10);
+                      if (orderDate !== prescDateFilter) return false;
+                    } else {
+                      try {
+                        const d = new Date(rawDateStr);
+                        if (!isNaN(d.getTime())) {
+                          const year = d.getFullYear();
+                          const month = String(d.getMonth() + 1).padStart(2, '0');
+                          const day = String(d.getDate()).padStart(2, '0');
+                          if (`${year}-${month}-${day}` !== prescDateFilter) return false;
+                        }
+                      } catch (e) {
+                        // pass
+                      }
+                    }
+                  }
+                }
+
                 return true;
               });
 
@@ -1269,14 +1332,18 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                   <div className="bg-white rounded-xl p-6 text-center border border-dashed border-[#bdc9c5] py-10">
                     <span className="material-symbols-outlined text-3xl text-gray-300 mb-2">search_off</span>
                     <p className="font-bold text-xs text-gray-700">Không tìm thấy đơn hàng</p>
-                    <p className="text-[10px] text-gray-500 mt-0.5">Không có đơn hàng nào ở trạng thái này.</p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Không có đơn hàng nào khớp với bộ lọc ngày hoặc trạng thái này.</p>
                   </div>
                 );
               }
 
+              const totalPages = Math.ceil(filteredOrders.length / PRESC_PER_PAGE) || 1;
+              const currentPageClamped = Math.min(prescPage, totalPages);
+              const paginatedOrders = filteredOrders.slice((currentPageClamped - 1) * PRESC_PER_PAGE, currentPageClamped * PRESC_PER_PAGE);
+
               return (
                 <div className="space-y-3.5">
-                  {filteredOrders.map((order) => {
+                  {paginatedOrders.map((order) => {
                     const items = order.items || [];
                     const isPending = order.status === 'cho_duyet' || order.status === 'pending';
                     const isApproved = order.status === 'duoc_duyet' || order.status === 'approved';
@@ -1389,6 +1456,34 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                       </div>
                     );
                   })}
+
+                  {/* Pagination Controls Bar (2 orders per page) */}
+                  <div className="bg-white border border-[#bdc9c5] rounded-xl p-3 flex items-center justify-between shadow-xs">
+                    <span className="text-[11px] font-semibold text-gray-600">
+                      Trang <strong className="text-[#00685c] font-bold">{currentPageClamped}</strong> / <strong className="text-gray-900">{totalPages}</strong> ({filteredOrders.length} đơn)
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={currentPageClamped <= 1}
+                        onClick={() => setPrescPage((p) => Math.max(1, p - 1))}
+                        className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-bold rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer flex items-center gap-0.5"
+                      >
+                        <span className="material-symbols-outlined text-xs">chevron_left</span> Trước
+                      </button>
+                      <span className="text-[11px] font-bold text-[#00685c] px-2 py-0.5 bg-emerald-50 rounded border border-emerald-200">
+                        {currentPageClamped}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={currentPageClamped >= totalPages}
+                        onClick={() => setPrescPage((p) => Math.min(totalPages, p + 1))}
+                        className="px-2.5 py-1 bg-[#00685c] hover:bg-[#005047] text-white text-xs font-bold rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer shadow-xs flex items-center gap-0.5"
+                      >
+                        Sau <span className="material-symbols-outlined text-xs">chevron_right</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })()}
