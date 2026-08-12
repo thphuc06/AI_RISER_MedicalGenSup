@@ -155,8 +155,7 @@ ${initialProfileSummary}
 - get_contraindications: Tra cứu chống chỉ định của hoạt chất đối với các bệnh nền/thai kỳ/đối tượng đặc biệt từ cơ sở dữ liệu.
 - get_max_dose: Tra cứu giới hạn liều dùng tối đa mg/ngày theo hoạt chất và độ tuổi hoặc nhóm tuổi.
 - update_health_profile: Cập nhật thông tin hồ sơ sức khỏe.
-- Chỉ gọi add_to_cart, remove_from_cart hay update_health_profile sau khi người dùng đồng ý/yêu cầu trong cuộc trò chuyện.
-- Mã điều kiện gợi ý: [${validConditions.join(', ')}]. Nhóm tuổi gợi ý: [${validAgeGroups.join(', ')}].`;
+- Chỉ gọi add_to_cart, remove_from_cart hay update_health_profile sau khi người dùng đồng ý/yêu cầu trong cuộc trò chuyện.`;
 
   let isLiveSessionOpen = true;
 

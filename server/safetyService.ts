@@ -1,4 +1,5 @@
 import type { CartLine, HealthProfile, Product, SafetyData, SafetyResult } from './domain.js';
+import { GoogleGenAI } from '@google/genai';
 
 export function normalizeText(value: string): string {
   return String(value || '')
@@ -99,49 +100,113 @@ export function tokenOverlapRatio(str1: string, str2: string): number {
   return minLen > 0 ? matchCount / minLen : 0;
 }
 
-export function mapToConditionCode(inputStr: string): string {
-  const norm = normalizeText(inputStr);
-  if (!norm) return '';
-  if (norm.includes('tieu duong') || norm.includes('dai thao duong') || norm.includes('duong huyet') || norm.includes('diabetes') || norm.includes('duong cao')) {
-    return 'dai_thao_duong';
+export function mapToConditionCode(inputStr: string, taxonomyKeys?: string[]): string {
+  const normInput = normalizeText(inputStr);
+  if (!normInput) return '';
+
+  const taxonomy = (taxonomyKeys && taxonomyKeys.length > 0) ? taxonomyKeys : [];
+
+  if (taxonomy.length === 0) {
+    return normalizeCode(inputStr);
   }
-  if (norm.includes('cao huyet ap') || norm.includes('tang huyet ap') || norm.includes('huyet ap') || norm.includes('hypertension')) {
-    return 'tang_huyet_ap_nang';
+
+  // 1. Direct or normalized code match against taxonomy keys
+  const normalizedInputCode = normalizeCode(inputStr);
+  for (const key of taxonomy) {
+    const normKey = normalizeCode(key);
+    if (normalizedInputCode === normKey) return key;
   }
-  if (norm.includes('da day') || norm.includes('ta trang') || norm.includes('loet') || norm.includes('ulcer') || norm.includes('trao nguoc')) {
-    return 'loet_da_day_ta_trang';
+
+  // 2. Dynamic matching against taxonomy items (token overlap & similarity)
+  let bestMatchKey = '';
+  let highestScore = 0;
+
+  for (const key of taxonomy) {
+    const keyWords = normalizeText(key.replace(/_/g, ' '));
+
+    // Substring inclusion
+    if (normInput.length >= 3 && keyWords.length >= 3) {
+      if (keyWords.includes(normInput) || normInput.includes(keyWords)) {
+        return key;
+      }
+    }
+
+    // Token overlap
+    const overlap = tokenOverlapRatio(normInput, keyWords);
+    if (overlap > highestScore && overlap >= 0.5) {
+      highestScore = overlap;
+      bestMatchKey = key;
+    }
+
+    // String similarity
+    const sim = stringSimilarity(normInput, keyWords);
+    if (sim > highestScore && sim >= 0.6) {
+      highestScore = sim;
+      bestMatchKey = key;
+    }
   }
-  if (norm.includes('suy gan') || norm.includes('viem gan') || norm.includes('benh gan')) {
-    return 'suy_gan_nang';
+
+  if (bestMatchKey) {
+    return bestMatchKey;
   }
-  if (norm.includes('suy than') || norm.includes('benh than')) {
-    return 'suy_than_nang';
-  }
-  if (norm.includes('suy tim') || norm.includes('benh tim')) {
-    return 'suy_tim_nang';
-  }
-  if (norm.includes('hen') || norm.includes('hen phe quan') || norm.includes('asthma')) {
-    return 'hen_phe_quan';
-  }
-  if (norm.includes('mang thai') || norm.includes('co thai') || norm.includes('bau') || norm.includes('pregnancy')) {
-    return 'mang_thai';
-  }
-  if (norm.includes('nghien ruou') || norm.includes('uong ruou') || norm.includes('ruou bia')) {
-    return 'nghien_ruou';
-  }
-  if (norm.includes('glocom') || norm.includes('tang nhan ap')) {
-    return 'glocom_goc_dong';
-  }
-  if (norm.includes('tuyen tien liet') || norm.includes('phi dai tuyen tien liet')) {
-    return 'phi_dai_tuyen_tien_liet';
-  }
-  if (norm.includes('cuong giap') || norm.includes('bazedow')) {
-    return 'cuong_giap';
-  }
+
   return normalizeCode(inputStr);
 }
 
-export function checkConditionMatch(userCondition: string, ruleCondition: string): boolean {
+/**
+ * Subagent AI Classifier:
+ * Takes natural language condition input(s) and maps them to exact snake_case taxonomy keys from DB using Gemini.
+ */
+export async function classifyConditionsWithAI(
+  userConditions: string[],
+  taxonomyKeys: string[]
+): Promise<string[]> {
+  if (!userConditions || userConditions.length === 0 || !taxonomyKeys || taxonomyKeys.length === 0) {
+    return userConditions.map(u => normalizeCode(u));
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return userConditions.map(u => mapToConditionCode(u, taxonomyKeys));
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const prompt = `Bạn là Subagent Dược sĩ AI phân loại bệnh nền y tế.
+Nhiệm vụ: Ánh xạ danh sách bệnh nền/triệu chứng viết bằng ngôn ngữ tự nhiên của bệnh nhân về đúng danh sách MÃ CHUẨN (snake_case) duy nhất từ Bảng Taxonomy bên dưới.
+
+BẢNG TAXONOMY MÃ CHUẨN TỪ DATABASE:
+${JSON.stringify(taxonomyKeys)}
+
+DANH SÁCH BỆNH NỀN/TRIỆU CHỨNG CỦA BỆNH NHÂN:
+${JSON.stringify(userConditions)}
+
+QUY TẮC:
+1. Mỗi bệnh nền của bệnh nhân, hãy tìm MÃ CHUẨN khớp nhất về mặt ý nghĩa y khoa từ BẢNG TAXONOMY.
+2. Nếu 1 câu thể hiện nhiều bệnh hoặc từ đồng nghĩa (ví dụ "đau bao tử", "loét tá tràng"), chọn mã đại diện tương ứng trong Taxonomy (ví dụ "loet_da_day_ta_trang").
+3. Trả về định dạng JSON duy nhất dưới dạng mảng các mã snake_case tìm được. Ví dụ: ["loet_da_day_ta_trang", "suy_gan_nang"]. Không trả về văn bản thừa.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json'
+      }
+    });
+
+    const responseText = response.text?.trim() || '[]';
+    const parsed = JSON.parse(responseText);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map(item => String(item).trim());
+    }
+  } catch (err) {
+    console.warn('[Subagent Classifier] AI classification fallback to dynamic matching:', err);
+  }
+
+  return userConditions.map(u => mapToConditionCode(u, taxonomyKeys));
+}
+
+export function checkConditionMatch(userCondition: string, ruleCondition: string, taxonomyKeys?: string[]): boolean {
   if (!userCondition || !ruleCondition) return false;
 
   // 1. Direct or normalized code exact match
@@ -160,16 +225,18 @@ export function checkConditionMatch(userCondition: string, ruleCondition: string
 
   // 3. Dynamic Token Overlap (Fuzzy word matching)
   const tokenRatio = tokenOverlapRatio(userCondition, ruleCondition);
-  if (tokenRatio >= 0.6) return true;
+  if (tokenRatio >= 0.5) return true;
 
-  // 4. Character Levenshtein similarity ratio (>= 0.70)
+  // 4. Character Levenshtein similarity ratio (>= 0.65)
   const charSim = stringSimilarity(normUser, normRule);
-  if (charSim >= 0.7) return true;
+  if (charSim >= 0.65) return true;
 
-  // 5. Synonym / Alias Mapping fallback
-  const mappedUser = mapToConditionCode(userCondition);
-  const mappedRule = mapToConditionCode(ruleCondition);
-  if (mappedUser && mappedRule && mappedUser === mappedRule) return true;
+  // 5. Dynamic Taxonomy Mapping fallback
+  if (taxonomyKeys && taxonomyKeys.length > 0) {
+    const mappedUser = mapToConditionCode(userCondition, taxonomyKeys);
+    const mappedRule = mapToConditionCode(ruleCondition, taxonomyKeys);
+    if (mappedUser && mappedRule && mappedUser === mappedRule) return true;
+  }
 
   return false;
 }
@@ -206,7 +273,7 @@ export function mapToAgeGroup(inputVal: unknown): { nhom_tuoi: string | null; do
   return { nhom_tuoi: normalizeCode(str) || null, do_tuoi: str };
 }
 
-function profileValues(profile: HealthProfile | null): string[] {
+function profileValues(profile: HealthProfile | null, taxonomyKeys?: string[]): string[] {
   if (!profile) return [];
   const values: string[] = [];
   for (const field of ['benh_nen', 'conditions', 'doi_tuong', 'di_ung'] as const) {
@@ -218,7 +285,8 @@ function profileValues(profile: HealthProfile | null): string[] {
   for (const raw of values) {
     const item = raw.trim();
     if (!item) continue;
-    const mapped = mapToConditionCode(item);
+    result.push(item);
+    const mapped = mapToConditionCode(item, taxonomyKeys);
     if (mapped) result.push(mapped);
     const code = normalizeCode(item);
     if (code && code !== mapped) result.push(code);
@@ -329,12 +397,16 @@ export function evaluateSafety(input: EvaluateSafetyInput): SafetyResult {
   const userAgeGrp = ageGroup(healthProfile);
   if (userAgeGrp) userCondList.push(userAgeGrp);
 
+  const activeTaxonomy = Array.from(
+    new Set(safetyData.contraindications.map((item) => item.dieu_kien.trim().toLowerCase()).filter(Boolean))
+  );
+
   let warningReason = '';
   for (const { product } of resolved) {
     const ingredients = new Set(parseActiveIngredients(product.hoat_chat));
     for (const rule of safetyData.contraindications) {
       if (!ingredients.has(normalizeText(rule.hoat_chat))) continue;
-      const isMatch = userCondList.some((userCond) => checkConditionMatch(userCond, rule.dieu_kien));
+      const isMatch = userCondList.some((userCond) => checkConditionMatch(userCond, rule.dieu_kien, activeTaxonomy));
       if (!isMatch) continue;
       if (rule.muc_do.trim().toUpperCase() === 'BLOCK') {
         return { verdict: 'BLOCK', reason: rule.ly_do_ngan_gon };

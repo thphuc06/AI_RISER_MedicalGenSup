@@ -8,8 +8,8 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
-export const db = firebaseConfig.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+export const db = (firebaseConfig as any).firestoreDatabaseId
+  ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
   : getFirestore(app);
 
 export const signInWithGoogle = async () => {
@@ -22,7 +22,9 @@ export const signInWithGoogle = async () => {
   }
 };
 
-export const logoutUser = () => signOut(auth);
+export const logoutUser = async () => {
+  return signOut(auth);
+};
 
 export const ensureAuthenticatedUser = async (): Promise<any> => {
   if (auth.currentUser) return auth.currentUser;

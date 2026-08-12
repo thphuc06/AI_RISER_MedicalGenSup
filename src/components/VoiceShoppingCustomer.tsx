@@ -301,6 +301,13 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
     }
   };
 
+  const [currentProductPage, setCurrentProductPage] = useState(1);
+  const PRODUCTS_PER_PAGE = 5;
+
+  useEffect(() => {
+    setCurrentProductPage(1);
+  }, [productSearchQuery]);
+
   const filteredProducts = products.filter((p) => {
     const term = productSearchQuery.toLowerCase();
     return (
@@ -309,6 +316,12 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
       p.sku?.toLowerCase().includes(term)
     );
   });
+
+  const totalProductPages = Math.ceil(filteredProducts.length / PRODUCTS_PER_PAGE) || 1;
+  const paginatedProducts = filteredProducts.slice(
+    (currentProductPage - 1) * PRODUCTS_PER_PAGE,
+    currentProductPage * PRODUCTS_PER_PAGE
+  );
 
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const [checkoutSuccess, setCheckoutSuccess] = useState(false);
@@ -798,22 +811,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 </div>
               )}
 
-              {/* Voice Presets Selector */}
-              <div className="flex gap-1.5 overflow-x-auto max-w-full pb-2 mb-1 px-1 scrollbar-none">
-                {VOICE_PRESETS.map((preset) => (
-                  <button
-                    key={preset.id}
-                    onClick={() => handleSelectPreset(preset)}
-                    className={`px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-all cursor-pointer ${
-                      activePreset.id === preset.id
-                        ? 'bg-[#00685c] text-white shadow-xs font-bold'
-                        : 'bg-[#ebefec] text-[#3e4946] hover:bg-[#dfe3e1]'
-                    }`}
-                  >
-                    🗣️ {preset.label}
-                  </button>
-                ))}
-              </div>
+
 
               {/* REQUIREMENT 1: 3D Mic & Hold-to-Talk / Tap-to-Talk */}
               <div
@@ -1066,13 +1064,13 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
             </div>
 
             {/* List of Products */}
-            <div className="space-y-3 overflow-y-auto flex-1 pb-4">
+            <div className="space-y-3 overflow-y-auto flex-1 pb-2">
               {filteredProducts.length === 0 ? (
                 <div className="bg-white p-6 rounded-xl border border-[#bdc9c5] text-center text-xs text-slate-500">
                   Không tìm thấy thuốc nào khớp với từ khóa tìm kiếm.
                 </div>
               ) : (
-                filteredProducts.map((prod: any) => {
+                paginatedProducts.map((prod: any) => {
                   const cartItem = cartItems.find((item) => item.id === prod.sku);
                   const qty = cartItem ? cartItem.quantity : 0;
                   
@@ -1124,6 +1122,61 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 })
               )}
             </div>
+
+            {/* Pagination Controls */}
+            {filteredProducts.length > 0 && (
+              <div className="bg-white p-2.5 rounded-xl border border-[#bdc9c5] shadow-2xs flex flex-col sm:flex-row items-center justify-between gap-2 text-xs">
+                <span className="text-slate-500 text-[11px] font-medium">
+                  Trang <span className="font-bold text-[#00685c]">{currentProductPage}</span> / {totalProductPages} ({filteredProducts.length} thuốc)
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setCurrentProductPage((prev) => Math.max(prev - 1, 1))}
+                    disabled={currentProductPage === 1}
+                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-md font-semibold text-[11px] transition-colors flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-xs">chevron_left</span>
+                    Trước
+                  </button>
+
+                  {Array.from({ length: totalProductPages }, (_, i) => i + 1)
+                    .filter((page) => {
+                      return (
+                        page === 1 ||
+                        page === totalProductPages ||
+                        Math.abs(page - currentProductPage) <= 1
+                      );
+                    })
+                    .map((page, index, array) => {
+                      const showEllipsis = index > 0 && page - array[index - 1] > 1;
+                      return (
+                        <React.Fragment key={page}>
+                          {showEllipsis && <span className="text-slate-400 text-[10px] px-0.5">...</span>}
+                          <button
+                            onClick={() => setCurrentProductPage(page)}
+                            className={`w-6 h-6 rounded-md font-bold text-[11px] flex items-center justify-center transition-colors cursor-pointer ${
+                              currentProductPage === page
+                                ? 'bg-[#00685c] text-white shadow-2xs'
+                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+
+                  <button
+                    onClick={() => setCurrentProductPage((prev) => Math.min(prev + 1, totalProductPages))}
+                    disabled={currentProductPage === totalProductPages}
+                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-md font-semibold text-[11px] transition-colors flex items-center gap-0.5 cursor-pointer"
+                  >
+                    Sau
+                    <span className="material-symbols-outlined text-xs">chevron_right</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

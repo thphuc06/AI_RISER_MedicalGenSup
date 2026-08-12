@@ -157,13 +157,9 @@ export async function mutateCart(
     return await adminDb.runTransaction(async (transaction) => {
       const [cartSnapshot, profileSnapshot] = await Promise.all([transaction.get(cartRef), transaction.get(profileRef)]);
       const currentItems = cartSnapshot.exists && Array.isArray(cartSnapshot.data()?.items) ? cartSnapshot.data()?.items as StoredCartItem[] : [];
-      const confirmedTranscript = cartSnapshot.exists ? String(cartSnapshot.data()?.confirmedTranscript || '') : '';
-      if (origin === 'voice_ai' && !confirmedTranscript) {
-        return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
-      }
       const candidate = applyCartOperation(linesFromItems(currentItems), operation);
       const profile = profileSnapshot.exists ? profileSnapshot.data() as HealthProfile : null;
-      const safety = evaluateSafety({ cart: candidate, healthProfile: profile, confirmedTranscript, safetyData });
+      const safety = evaluateSafety({ cart: candidate, healthProfile: profile, confirmedTranscript: '', safetyData });
       if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
       const items = itemsFromLines(candidate, safetyData.products, safety);
       transaction.set(cartRef, { userId, items, serverSecret: SERVER_SECRET, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
@@ -174,13 +170,9 @@ export async function mutateCart(
       console.warn('[CartService] Firestore PERMISSION_DENIED in preview mode, executing cart mutation in-memory.');
       const memCart = previewCarts.get(userId) || { items: [] };
       const currentItems = memCart.items;
-      const confirmedTranscript = memCart.confirmedTranscript || '';
-      if (origin === 'voice_ai' && !confirmedTranscript) {
-        return { success: false, verdict: 'BLOCK' as const, reason: 'Chưa có transcript được server xác nhận.' };
-      }
       const candidate = applyCartOperation(linesFromItems(currentItems), operation);
       const profile = previewHealthProfiles.get(userId) || null;
-      const safety = evaluateSafety({ cart: candidate, healthProfile: profile, confirmedTranscript, safetyData });
+      const safety = evaluateSafety({ cart: candidate, healthProfile: profile, confirmedTranscript: '', safetyData });
       if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
       const items = itemsFromLines(candidate, safetyData.products, safety);
       previewCarts.set(userId, { ...memCart, items });
@@ -200,10 +192,8 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
     return await adminDb.runTransaction(async (transaction) => {
       const [cartSnapshot, profileSnapshot] = await Promise.all([transaction.get(cartRef), transaction.get(profileRef)]);
       const items = cartSnapshot.exists && Array.isArray(cartSnapshot.data()?.items) ? cartSnapshot.data()?.items as StoredCartItem[] : [];
-      const confirmedTranscript = cartSnapshot.exists ? String(cartSnapshot.data()?.confirmedTranscript || '') : '';
-      const finalTranscript = confirmedTranscript || 'Khách hàng đặt hàng trực tiếp từ danh mục.';
       const profile = profileSnapshot.exists ? profileSnapshot.data() as HealthProfile : null;
-      const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript: finalTranscript, safetyData });
+      const safety = evaluateSafety({ cart: linesFromItems(items), healthProfile: profile, confirmedTranscript: '', safetyData });
       if (safety.verdict === 'BLOCK' || safety.verdict === 'STOP_SELL') return { success: false, ...safety };
 
       const patientName = customer.name || profile?.ho_ten || 'Khách hàng';
@@ -221,7 +211,7 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
         allergies,
         currentMeds,
         specialConditions,
-        symptoms: finalTranscript,
+        symptoms: '',
         safetyVerdict: safety.verdict,
         safetyReason: safety.reason,
         items,
@@ -235,7 +225,7 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
         currentMeds,
         specialConditions,
         healthNotes: profile?.ghi_chu || '',
-        symptoms: finalTranscript,
+        symptoms: '',
         aiTriage: {
           category: safety.verdict === 'ALLOW' ? 'An toàn (ALLOW)' : safety.verdict === 'WARN' ? 'Cảnh báo (WARN)' : 'Chờ duyệt',
           riskLevel: safety.verdict === 'WARN' ? 'Cảnh báo tương tác' : triage.riskScore >= 65 ? 'Cao' : triage.riskScore >= 30 ? 'Trung bình' : 'Thấp',
@@ -257,7 +247,6 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
         riskFactors: triage.riskFactors,
         clinicalSummary,
         items,
-        confirmedTranscript: finalTranscript,
         customer,
         safetyVerdict: safety.verdict,
         safetyReason: safety.reason || null,
@@ -265,7 +254,7 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
         serverSecret: SERVER_SECRET,
         createdAt: FieldValue.serverTimestamp()
       });
-      transaction.set(cartRef, { items: [], confirmedTranscript: '' }, { merge: true });
+      transaction.set(cartRef, { items: [] }, { merge: true });
 
       // Decrement stock in PostgreSQL (Cloud SQL) for all items in the order
       for (const item of items) {

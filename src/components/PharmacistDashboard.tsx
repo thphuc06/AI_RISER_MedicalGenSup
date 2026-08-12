@@ -903,15 +903,7 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
                           </div>
                         )}
 
-                        <div className="bg-[#f6faf8] p-3 rounded-lg border border-[#bdc9c5] text-xs leading-relaxed mt-2">
-                          <strong className="text-[#00685c] uppercase text-[10px] block mb-1 flex items-center gap-1">
-                            <span className="material-symbols-outlined text-xs">auto_awesome</span>
-                            Tóm tắt nhu cầu tư vấn & Triệu chứng AI:
-                          </strong>
-                          <p className="text-[#181c1b] font-medium">
-                            {selectedOrder.clinicalSummary.symptoms || 'Khách hàng đặt hàng trực tiếp từ danh mục.'}
-                          </p>
-                        </div>
+
                       </div>
                     </div>
 
