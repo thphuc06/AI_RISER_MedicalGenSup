@@ -61,63 +61,7 @@ export const initialPharmacists: Pharmacist[] = [
 ];
 
 // Initial sample seed appointments so there is immediate realistic data
-const initialAppointments: Appointment[] = [
-  {
-    id: '#APT-1001',
-    patientId: 'patient_nam_01',
-    patientName: 'Trần Văn Nam',
-    patientPhone: '0901234567',
-    patientEmail: 'phuctranaws180406@gmail.com',
-    pharmacistId: 'ds_tran_hoang_phuc_uid',
-    pharmacistName: 'DS. Trần Hoàng Phúc',
-    pharmacistEmail: 'duocsi.phuc@vietmedcare.com',
-    specialty: 'Tim mạch & Huyết áp',
-    dateTime: new Date(Date.now() + 3600 * 1000 * 16).toISOString(), // 16h from now
-    timeSlot: '09:30 - 10:00, Hôm nay',
-    topic: 'Tư vấn chống chỉ định & cảnh báo liều cao paracetamol cho đơn thuốc TIER 1 #MD-8821',
-    status: 'scheduled',
-    meetUrl: 'https://meet.google.com/vietmedcare-consult-1001',
-    relatedOrderId: '#MD-8821',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    notes: 'Bệnh nhân có tiền sử cao huyết áp và dị ứng nhẹ với Aspirin. Cần xác nhận lại đơn thuốc trước khi giao hàng.',
-  },
-  {
-    id: '#APT-1002',
-    patientId: 'patient_hoa_02',
-    patientName: 'Lê Thị Hoa',
-    patientPhone: '0987654321',
-    patientEmail: 'lehoa.patient@gmail.com',
-    pharmacistId: 'ds_nguyen_thi_linh_uid',
-    pharmacistName: 'DS. Nguyễn Thị Linh',
-    pharmacistEmail: 'duocsi.linh@vietmedcare.com',
-    specialty: 'Nhi khoa & Phụ nữ mang thai',
-    dateTime: new Date(Date.now() + 3600 * 1000 * 28).toISOString(),
-    timeSlot: '14:00 - 14:30, Ngày mai',
-    topic: 'Tư vấn đơn thuốc ho & hạ sốt cho phụ nữ đang cho con bú',
-    status: 'scheduled',
-    meetUrl: 'https://meet.google.com/vietmedcare-consult-1002',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
-    notes: 'Khách hàng nhờ hướng dẫn cách dùng thuốc xịt mũi và siro ho an toàn.',
-  },
-  {
-    id: '#APT-1000',
-    patientId: 'patient_nam_01',
-    patientName: 'Trần Văn Nam',
-    patientPhone: '0901234567',
-    patientEmail: 'phuctranaws180406@gmail.com',
-    pharmacistId: 'ds_tran_hoang_phuc_uid',
-    pharmacistName: 'DS. Trần Hoàng Phúc',
-    pharmacistEmail: 'duocsi.phuc@vietmedcare.com',
-    specialty: 'Thuốc kê đơn Rx',
-    dateTime: new Date(Date.now() - 3600 * 1000 * 24).toISOString(),
-    timeSlot: '10:00 - 10:30, Hôm qua',
-    topic: 'Tư vấn hướng dẫn sử dụng bút tiêm Insulin',
-    status: 'completed',
-    meetUrl: 'https://meet.google.com/vietmedcare-consult-1000',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 48).toISOString(),
-    notes: 'Đã hoàn thành tư vấn trực tuyến. Bệnh nhân đã hiểu rõ liều tiêm và thời điểm dùng.',
-  },
-];
+const initialAppointments: Appointment[] = [];
 
 // In-memory fallback map for instant updates
 const appointmentStore = new Map<string, Appointment>();
@@ -163,33 +107,57 @@ export async function getPharmacists(): Promise<Pharmacist[]> {
 }
 
 /**
+ * Helper to parse comma-separated specialties
+ */
+function parseSpecialties(specialtyInput: string): string[] {
+  if (!specialtyInput) return [];
+  return specialtyInput
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
  * Find the most suitable online or offline pharmacist for a given specialty
  */
 export async function findAvailablePharmacist(specialty: string): Promise<Pharmacist> {
   const pharmacists = await getPharmacists();
-  const searchSpec = specialty ? specialty.toLowerCase() : '';
+  const searchSpecs = parseSpecialties(specialty).map((s) => s.toLowerCase());
 
-  // 1. Try to find an ONLINE pharmacist with a matching specialty
-  let found = pharmacists.find(
-    (p) =>
-      p.isOnline &&
-      p.specialties.some((s) => s.toLowerCase().includes(searchSpec) || searchSpec.includes(s.toLowerCase()))
-  );
+  const targetPharmacistsWithScores = pharmacists.map((p) => {
+    let score = 0;
+    p.specialties.forEach((s) => {
+      const sLower = s.toLowerCase();
+      searchSpecs.forEach((spec) => {
+        if (sLower.includes(spec) || spec.includes(sLower)) {
+          score += 1;
+        }
+      });
+    });
+    return { p, score };
+  });
 
-  // 2. If none, find ANY pharmacist with a matching specialty
-  if (!found) {
-    found = pharmacists.find((p) =>
-      p.specialties.some((s) => s.toLowerCase().includes(searchSpec) || searchSpec.includes(s.toLowerCase()))
-    );
+  // Filter candidates with score > 0 and sort: higher score first, online first
+  const candidates = targetPharmacistsWithScores.filter((item) => item.score > 0);
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.p.isOnline !== b.p.isOnline) return a.p.isOnline ? -1 : 1;
+    return 0;
+  });
+
+  if (candidates.length > 0) {
+    // Try to find the first online candidate
+    const onlineCandidate = candidates.find((c) => c.p.isOnline);
+    if (onlineCandidate) return onlineCandidate.p;
+    return candidates[0].p;
   }
 
-  // 3. If still none, find ANY ONLINE pharmacist
-  if (!found) {
-    found = pharmacists.find((p) => p.isOnline);
-  }
+  // If no specialty match, try to find any online pharmacist
+  const anyOnline = pharmacists.find((p) => p.isOnline);
+  if (anyOnline) return anyOnline;
 
-  // 4. Ultimate fallback to the first pharmacist
-  return found || pharmacists[0] || initialPharmacists[0];
+  // Ultimate fallback
+  return pharmacists[0] || initialPharmacists[0];
 }
 
 /**
@@ -407,14 +375,36 @@ export async function checkPharmacistsAvailability(
   const pharmacists = await getPharmacists();
   const allAppointments = await getAllAppointments();
 
-  const searchSpec = specialty ? specialty.toLowerCase() : '';
-  const matchedPharmacists = pharmacists.filter((p) =>
-    p.specialties.some(
-      (s) => s.toLowerCase().includes(searchSpec) || searchSpec.includes(s.toLowerCase())
-    )
-  );
+  const searchSpecs = parseSpecialties(specialty).map((s) => s.toLowerCase());
+  
+  const targetPharmacistsWithScores = pharmacists.map((p) => {
+    let score = 0;
+    p.specialties.forEach((s) => {
+      const sLower = s.toLowerCase();
+      searchSpecs.forEach((spec) => {
+        if (sLower.includes(spec) || spec.includes(sLower)) {
+          score += 1;
+        }
+      });
+    });
+    return { p, score };
+  });
 
-  const targets = matchedPharmacists.length > 0 ? matchedPharmacists : pharmacists;
+  // Filter candidates with score > 0
+  const filtered = targetPharmacistsWithScores.filter((item) => item.score > 0);
+  
+  // Sort by score descending (highest weight first), then online status, then general order
+  filtered.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    if (a.p.isOnline !== b.p.isOnline) {
+      return a.p.isOnline ? -1 : 1;
+    }
+    return 0;
+  });
+
+  const targets = filtered.length > 0 ? filtered.map((item) => item.p) : pharmacists;
   const result: AvailablePharmacistSlots[] = [];
 
   for (const p of targets) {

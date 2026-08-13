@@ -183,8 +183,9 @@ ${JSON.stringify(userConditions)}
 
 QUY TẮC:
 1. Mỗi bệnh nền của bệnh nhân, hãy tìm MÃ CHUẨN khớp nhất về mặt ý nghĩa y khoa từ BẢNG TAXONOMY.
-2. Nếu 1 câu thể hiện nhiều bệnh hoặc từ đồng nghĩa (ví dụ "đau bao tử", "loét tá tràng"), chọn mã đại diện tương ứng trong Taxonomy (ví dụ "loet_da_day_ta_trang").
-3. Trả về định dạng JSON duy nhất dưới dạng mảng các mã snake_case tìm được. Ví dụ: ["loet_da_day_ta_trang", "suy_gan_nang"]. Không trả về văn bản thừa.`;
+2. Nếu bệnh nền đó KHÔNG có bất kỳ mã nào tương ứng hoặc tương đồng trong BẢNG TAXONOMY, hãy tự tạo ra một mã chuẩn hóa snake_case mới tương ứng mô tả đúng bệnh lý đó (Ví dụ: "Viêm đại tràng co thắt" -> "viem_dai_trang_co_that"). Tuyệt đối không cố gắng ép vào một mã không liên quan.
+3. Nếu 1 câu thể hiện nhiều bệnh hoặc từ đồng nghĩa (ví dụ "đau bao tử", "loét tá tràng"), chọn mã đại diện tương ứng trong Taxonomy (ví dụ "loet_da_day_ta_trang").
+4. Trả về định dạng JSON duy nhất dưới dạng mảng các mã snake_case tìm được. Ví dụ: ["loet_da_day_ta_trang", "suy_gan_nang"]. Không trả về văn bản thừa.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',

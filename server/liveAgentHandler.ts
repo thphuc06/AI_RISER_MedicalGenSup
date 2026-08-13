@@ -61,18 +61,18 @@ const tools: FunctionDeclaration[] = [
   declaration('escalate_to_pharmacist', 'Chuyển cho dược sĩ.', { ly_do: stringProperty('Lý do') }, ['ly_do']),
   declaration(
     'check_pharmacists_availability',
-    'Kiểm tra danh sách dược sĩ và các khung giờ rảnh (lịch trống) của họ dựa trên chuyên khoa và ngày yêu cầu.',
+    'Kiểm tra danh sách dược sĩ và các khung giờ rảnh (lịch trống) của họ dựa trên một hoặc nhiều chuyên khoa (ngăn cách bằng dấu phẩy) và ngày yêu cầu. Hệ thống tự động xếp thứ tự ưu tiên dược sĩ khớp nhiều chuyên khoa nhất.',
     {
-      chuyen_khoa: stringProperty('Chuyên khoa tư vấn: "Tim mạch & Huyết áp", "Nhi khoa & Mẹ bé", "Thuốc kê đơn Rx", "Nội tổng quát"'),
+      chuyen_khoa: stringProperty('Chuyên khoa hoặc danh sách chuyên khoa phân tách bằng dấu phẩy (ví dụ: "Tim mạch & Huyết áp", hoặc "Tim mạch & Huyết áp, Nội tổng quát")'),
       ngay: stringProperty('Ngày cần kiểm tra (ví dụ: "Hôm nay", "Ngày mai", hoặc định dạng "YYYY-MM-DD")')
     },
     ['chuyen_khoa', 'ngay']
   ),
   declaration(
     'schedule_consultation',
-    'Tự động đặt lịch tư vấn trực tuyến qua Google Meet với Dược sĩ/Bác sĩ chuyên khoa khi bệnh nhân yêu cầu hoặc đơn thuộc Tier 1 nguy cơ cao.',
+    'Tự động đặt lịch tư vấn trực tuyến qua Google Meet với Dược sĩ/Bác sĩ chuyên khoa khi bệnh nhân yêu cầu hoặc đơn thuộc Tier 1 nguy cơ cao. Chấp nhận danh sách chuyên khoa phân tách bằng dấu phẩy để hệ thống tự lựa chọn dược sĩ phù hợp nhất theo trọng số.',
     {
-      chuyen_khoa: stringProperty('Chuyên khoa tư vấn: "Tim mạch & Huyết áp", "Nhi khoa & Mẹ bé", "Thuốc kê đơn Rx", "Nội tổng quát"'),
+      chuyen_khoa: stringProperty('Chuyên khoa hoặc danh sách chuyên khoa phân tách bằng dấu phẩy (ví dụ: "Tim mạch & Huyết áp", hoặc "Tim mạch & Huyết áp, Nội tổng quát")'),
       ngay_gio: stringProperty('Ngày giờ đề xuất (ví dụ: "09:30 sáng mai", "14:00 hôm nay", "09:00 - 09:30, Hôm nay")'),
       ghi_chu_tu_van: stringProperty('Ghi chú lý do tư vấn hoặc cảnh báo nguy cơ từ đơn thuốc'),
       pharmacist_id: stringProperty('Mã ID dược sĩ đã chọn từ danh sách check_pharmacists_availability (tùy chọn)')
@@ -124,11 +124,19 @@ async function startLiveSession(clientWs: WebSocket, userId: string) {
   const validConditions = getValidConditions();
   const validAgeGroups = getValidAgeGroups();
 
-  // Pre-fetch current cart items and health profile for session context
-  const [cartItems, profileData] = await Promise.all([
+  // Pre-fetch current cart items, health profile, and pharmacists for session context
+  const [cartItems, profileData, pharmacists] = await Promise.all([
     readCart(userId).catch(() => []),
     readHealthProfile(userId).catch(() => ({ status: 'missing' as const, profile: null })),
+    getPharmacists().catch(() => []),
   ]);
+
+  const uniqueSpecialties = Array.from(
+    new Set(pharmacists.flatMap((p) => p.specialties || []))
+  );
+  const specialtiesSummary = uniqueSpecialties.length > 0
+    ? uniqueSpecialties.map((s) => `- ${s}`).join('\n')
+    : '- Chưa cấu hình chuyên khoa (Liên hệ ban quản trị)';
 
   const initialCartSummary = cartItems.length > 0
     ? cartItems.map((item) => `- ${item.name} (SKU: ${item.id}, SL: ${item.quantity}, Hoạt chất: ${item.activeIngredient || 'Chưa rõ'})`).join('\n')
@@ -184,7 +192,12 @@ Khi người dùng yêu cầu đặt lịch hẹn, gặp dược sĩ tư vấn h
 (1) Hãy lịch sự hỏi người dùng về thời gian rảnh mong muốn của họ (ví dụ: "Hôm nay", "Ngày mai").
 (2) Gọi công cụ 'check_pharmacists_availability' với chuyên khoa và ngày rảnh đó để tra cứu danh sách dược sĩ và các lịch trống của họ.
 (3) Đọc danh sách các dược sĩ rảnh kèm theo tối đa 2-3 khung giờ trống tiêu biểu cho người dùng lựa chọn (VD: "DS. Trần Hoàng Phúc đang trống lịch lúc 9:00 và 10:30 sáng mai, hoặc DS. Nguyễn Thị Linh trống lịch lúc 14:00"). Hãy đọc thật ngắn gọn, tự nhiên.
-(4) Khi bệnh nhân xác nhận lựa chọn của mình, hãy gọi công cụ 'schedule_consultation' với chuyên khoa, ngày giờ chính xác và 'pharmacist_id' của dược sĩ đã được chọn để chính thức chốt lịch hẹn cho họ.`;
+(4) Khi bệnh nhân xác nhận lựa chọn của mình, hãy gọi công cụ 'schedule_consultation' với chuyên khoa, ngày giờ chính xác và 'pharmacist_id' của dược sĩ đã được chọn để chính thức chốt lịch hẹn cho họ.
+
+==================================================
+6. DANH SÁCH CHUYÊN KHOA KHẢ DỤNG THỰC TẾ TRÊN HỆ THỐNG (Firestore):
+${specialtiesSummary}
+- Bạn chỉ được gợi ý đặt lịch hẹn cho các chuyên khoa có trong danh sách thực tế trên. Hãy tự động ánh xạ triệu chứng của bệnh nhân sang một hoặc nhiều chuyên khoa phù hợp nhất trong danh sách trên (phân tách bằng dấu phẩy) khi gọi công cụ check_pharmacists_availability.`;
 
   let isLiveSessionOpen = true;
 
