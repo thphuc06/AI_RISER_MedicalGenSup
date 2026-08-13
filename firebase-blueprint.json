@@ -34,6 +34,47 @@
         "gender": { "type": "string" },
         "medicalHistory": { "type": "array" }
       }
+    },
+    "pharmacists": {
+      "title": "Pharmacists",
+      "description": "Registered pharmacists, their specialties, and online status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "specialties": { "type": "array" },
+        "isOnline": { "type": "boolean" },
+        "rating": { "type": "number" },
+        "avatarUrl": { "type": "string" },
+        "workingHours": { "type": "string" },
+        "createdAt": { "type": "string" }
+      }
+    },
+    "appointments": {
+      "title": "Appointments",
+      "description": "Online telehealth consultation appointments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "patientId": { "type": "string" },
+        "patientName": { "type": "string" },
+        "patientPhone": { "type": "string" },
+        "patientEmail": { "type": "string" },
+        "pharmacistId": { "type": "string" },
+        "pharmacistName": { "type": "string" },
+        "pharmacistEmail": { "type": "string" },
+        "specialty": { "type": "string" },
+        "dateTime": { "type": "string" },
+        "timeSlot": { "type": "string" },
+        "topic": { "type": "string" },
+        "status": { "type": "string" },
+        "meetUrl": { "type": "string" },
+        "relatedOrderId": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      }
     }
   }
 }

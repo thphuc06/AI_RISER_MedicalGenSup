@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Order, CartItem } from '../types';
 import { formatConditionToVietnamese, formatAgeDisplay } from '../utils/formatters';
+import { AppointmentsPagePharmacist } from './AppointmentsPagePharmacist';
 
 interface PharmacistDashboardProps {
   orders: Order[];
@@ -24,7 +25,7 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
   onSwitchToCustomerView,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'orders' | 'patients' | 'inventory' | 'reports'>('orders');
+  const [activeTab, setActiveTab] = useState<'orders' | 'appointments' | 'patients' | 'inventory' | 'reports'>('orders');
   const [showQueue, setShowQueue] = useState(true);
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
   const [showEditOrderModal, setShowEditOrderModal] = useState(false);
@@ -38,41 +39,26 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
   const [newSymptoms, setNewSymptoms] = useState('');
   const [newMedicalHistory, setNewMedicalHistory] = useState('Cao huyết áp');
 
-  // Tier Filter, Date Filter, and Sort State
+  // Status Filter State (Default PENDING_ONLY so approved/paid orders are hidden after review)
+  const [statusFilter, setStatusFilter] = useState<'PENDING_ONLY' | 'APPROVED' | 'ALL'>('PENDING_ONLY');
   const [tierFilter, setTierFilter] = useState<'ALL' | 'TIER_1_CALL' | 'TIER_2_STANDARD' | 'TIER_3_FAST'>('ALL');
   const [sortBy, setSortBy] = useState<'RISK_DESC' | 'NEWEST'>('RISK_DESC');
   const [pharmDateFilter, setPharmDateFilter] = useState<string>('');
   const [pharmPage, setPharmPage] = useState<number>(1);
   const PHARM_PER_PAGE = 2;
 
+  // Status Helpers
+  const isPendingOrder = (o: Order) =>
+    o.status === 'pending' || o.status === 'cho_duyet' || o.status === 'calling' || o.status === 'processing';
+
+  const isApprovedOrder = (o: Order) =>
+    o.status === 'duoc_duyet' || o.status === 'approved' || o.status === 'da_thanh_toan';
+
   // Timer simulation for selected order
   const [timerSeconds, setTimerSeconds] = useState<number>(195);
 
-  const selectedOrder = orders.find((o) => o.id === selectedOrderId) || orders[0];
-
-  useEffect(() => {
-    if (selectedOrder) {
-      setTimerSeconds(selectedOrder.processingTimeSeconds || 195);
-    }
-  }, [selectedOrderId, selectedOrder]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTimerSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const formatTimer = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
-  };
+  const pendingCount = orders.filter(isPendingOrder).length;
+  const approvedCount = orders.filter(isApprovedOrder).length;
 
   const getOrderRiskScore = (o: Order): number => {
     if (typeof o.riskScore === 'number') return o.riskScore;
@@ -91,12 +77,23 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
     return 'TIER_3_FAST';
   };
 
-  const tier1Count = orders.filter((o) => getOrderTier(o) === 'TIER_1_CALL').length;
-  const tier2Count = orders.filter((o) => getOrderTier(o) === 'TIER_2_STANDARD').length;
-  const tier3Count = orders.filter((o) => getOrderTier(o) === 'TIER_3_FAST').length;
+  const baseOrdersForCounts = orders.filter((o) => {
+    if (statusFilter === 'PENDING_ONLY') return isPendingOrder(o);
+    if (statusFilter === 'APPROVED') return isApprovedOrder(o);
+    return true;
+  });
+
+  const tier1Count = baseOrdersForCounts.filter((o) => getOrderTier(o) === 'TIER_1_CALL').length;
+  const tier2Count = baseOrdersForCounts.filter((o) => getOrderTier(o) === 'TIER_2_STANDARD').length;
+  const tier3Count = baseOrdersForCounts.filter((o) => getOrderTier(o) === 'TIER_3_FAST').length;
 
   const filteredOrders = orders
     .filter((o) => {
+      // 1. Status Filter (Default PENDING_ONLY)
+      if (statusFilter === 'PENDING_ONLY' && !isPendingOrder(o)) return false;
+      if (statusFilter === 'APPROVED' && !isApprovedOrder(o)) return false;
+
+      // 2. Search Query
       const query = searchQuery.toLowerCase();
       const matchesSearch =
         o.id.toLowerCase().includes(query) ||
@@ -104,11 +101,13 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
         o.patientPhone.includes(query);
       if (!matchesSearch) return false;
 
+      // 3. Tier Filter
       const tier = getOrderTier(o);
       if (tierFilter === 'TIER_1_CALL' && tier !== 'TIER_1_CALL') return false;
       if (tierFilter === 'TIER_2_STANDARD' && tier !== 'TIER_2_STANDARD') return false;
       if (tierFilter === 'TIER_3_FAST' && tier !== 'TIER_3_FAST') return false;
 
+      // 4. Date Filter
       if (pharmDateFilter) {
         const rawDate = o.timestamp || o.createdAt || '';
         if (rawDate) {
@@ -140,6 +139,36 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
       const tB = b.timestamp || '';
       return tB.localeCompare(tA);
     });
+
+  const selectedOrder =
+    filteredOrders.find((o) => o.id === selectedOrderId) ||
+    filteredOrders[0] ||
+    orders.find((o) => o.id === selectedOrderId) ||
+    orders[0];
+
+  useEffect(() => {
+    if (selectedOrder) {
+      setTimerSeconds(selectedOrder.processingTimeSeconds || 195);
+    }
+  }, [selectedOrderId, selectedOrder]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTimerSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatTimer = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
 
   const totalPharmPages = Math.ceil(filteredOrders.length / PHARM_PER_PAGE) || 1;
   const currentPharmPageClamped = Math.min(pharmPage, totalPharmPages);
@@ -250,6 +279,18 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveTab('appointments')}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+              activeTab === 'appointments'
+                ? 'bg-[#218274] text-white shadow-xs'
+                : 'text-[#3e4946] hover:bg-[#dfe3e1]'
+            }`}
+          >
+            <span className="material-symbols-outlined text-lg">calendar_month</span>
+            <span>Lịch hẹn (Calendar)</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('patients')}
             className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
               activeTab === 'patients'
@@ -353,8 +394,13 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
         </header>
 
         {/* Dashboard Layout */}
-        <div className="flex flex-1 overflow-hidden relative">
-          {/* LEFT QUEUE */}
+        {activeTab === 'appointments' ? (
+          <div className="flex-1 overflow-hidden">
+            <AppointmentsPagePharmacist />
+          </div>
+        ) : (
+          <div className="flex flex-1 overflow-hidden relative">
+            {/* LEFT QUEUE */}
           {showQueue && (
             <aside className="w-full md:w-72 bg-white border-r border-[#bdc9c5] flex flex-col shrink-0 h-full z-20 transition-all">
               <div className="p-3 border-b border-[#bdc9c5] bg-[#ebefec] space-y-2">
@@ -377,6 +423,43 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
                       <span className="material-symbols-outlined text-base">chevron_left</span>
                     </button>
                   </div>
+                </div>
+
+                {/* Status Filter Tabs */}
+                <div className="grid grid-cols-3 gap-1 text-[10px] font-bold">
+                  <button
+                    onClick={() => { setStatusFilter('PENDING_ONLY'); setPharmPage(1); }}
+                    className={`py-1 rounded text-center cursor-pointer border transition-colors ${
+                      statusFilter === 'PENDING_ONLY'
+                        ? 'bg-[#00685c] text-white border-[#00685c]'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    title="Đơn chờ duyệt (mặc định - ẩn đơn đã duyệt)"
+                  >
+                    Chờ duyệt ({pendingCount})
+                  </button>
+                  <button
+                    onClick={() => { setStatusFilter('APPROVED'); setPharmPage(1); }}
+                    className={`py-1 rounded text-center cursor-pointer border transition-colors ${
+                      statusFilter === 'APPROVED'
+                        ? 'bg-emerald-700 text-white border-emerald-700'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    title="Đơn đã duyệt & đã thanh toán"
+                  >
+                    Đã duyệt ({approvedCount})
+                  </button>
+                  <button
+                    onClick={() => { setStatusFilter('ALL'); setPharmPage(1); }}
+                    className={`py-1 rounded text-center cursor-pointer border transition-colors ${
+                      statusFilter === 'ALL'
+                        ? 'bg-gray-700 text-white border-gray-700'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    title="Xem tất cả đơn"
+                  >
+                    Tất cả ({orders.length})
+                  </button>
                 </div>
 
                 {/* Tier Filter Tabs */}
@@ -1085,6 +1168,7 @@ export const PharmacistDashboard: React.FC<PharmacistDashboardProps> = ({
             )}
           </section>
         </div>
+        )}
       </main>
 
       {/* Modal: Tạo đơn mới */}

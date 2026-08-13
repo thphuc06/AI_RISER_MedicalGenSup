@@ -210,14 +210,16 @@ export async function reloadSafetyDataFromPostgres(): Promise<boolean> {
 
 export async function startPeriodicRefresh(intervalMinutes = 10): Promise<void> {
   const loaded = await reloadSafetyDataFromPostgres();
-  if (!loaded || getProducts().length === 0) {
-    console.log('[SheetsService] Postgres database is empty or failed to load. Seeding from Google Sheets...');
-    await service.refresh();
+  if (loaded) {
+    console.log('[PharmacyData] Successfully initialized safety data cache directly from Postgres database!');
   } else {
-    console.log('[SheetsService] Successfully initialized safety data cache directly from Postgres database!');
+    console.error('[PharmacyData] Failed to load safety data from Postgres database.');
   }
 }
-export const loadAllSheets = () => service.refresh();
+export const loadAllSheets = async () => {
+  await reloadSafetyDataFromPostgres();
+  return service.getStatus();
+};
 export const getProducts = () => service.getSafetyData().products;
 export const getContraindications = () => service.getSafetyData().contraindications;
 export const getMaxDoses = () => service.getSafetyData().maxDoses;

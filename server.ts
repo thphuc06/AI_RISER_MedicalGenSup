@@ -9,10 +9,12 @@ import { checkoutCart, mutateCart, saveHealthProfile, readCart, readHealthProfil
 import { setupLiveAgentWebSocket } from './server/liveAgentHandler.js';
 import { mapToAgeGroup } from './server/safetyService.js';
 import { getCacheStatus, getContraindications, getMaxDoses, getProducts, getRedFlags, getValidAgeGroups, getValidConditions, loadAllSheets, startPeriodicRefresh, reloadSafetyDataFromPostgres } from './server/sheetsService.js';
+import { getAllAppointments, getUserAppointments, createAppointment, updateAppointmentStatus, getPharmacists, checkPharmacistsAvailability } from './server/appointmentService.js';
 import { computeOrderTriageScore } from './src/utils/triageCalculator.js';
 import { db } from './src/db/index.js';
 import { products, contraindications, maxDoses, redFlags } from './src/db/schema.js';
 import { getEmbedding } from './server/syncService.js';
+import { deductProductStock } from './server/stockService.js';
 import { eq } from 'drizzle-orm';
 
 const EXPECTED_PROJECT_ID = 'project-c55c421d-248e-4800-bfb';
@@ -63,7 +65,7 @@ async function startServer() {
     const configuredSecret = process.env.ADMIN_SYNC_SECRET;
     if (!configuredSecret || req.headers['x-admin-sync-secret'] !== configuredSecret) return res.status(403).json({ success: false, error: 'Administrative sync is disabled or unauthorized' });
     const status = await loadAllSheets();
-    return res.status(status.isHealthy ? 200 : 503).json({ success: status.isHealthy, message: status.isHealthy ? 'Google Sheets synced successfully' : 'Google Sheets sync failed', data: status });
+    return res.status(status.isHealthy ? 200 : 503).json({ success: status.isHealthy, message: status.isHealthy ? 'Database cache synced successfully' : 'Database cache sync failed', data: status });
   });
 
   // ADMIN CRUD API ENDPOINTS (Direct PostgreSQL write + real-time Gemini Embedding sync + Cache reload)
@@ -650,13 +652,15 @@ async function startServer() {
 
   app.post('/api/orders/:id/pay', async (req, res) => {
     const { id } = req.params;
+    let orderItems: any[] = [];
     
     if (previewOrders.has(id)) {
       const order = previewOrders.get(id);
-      if (order.status !== 'duoc_duyet' && order.status !== 'approved') {
+      if (order.status !== 'duoc_duyet' && order.status !== 'approved' && order.status !== 'da_thanh_toan') {
         return res.status(400).json({ success: false, error: 'Chỉ đơn hàng đã được phê duyệt mới có thể thanh toán.' });
       }
       order.status = 'da_thanh_toan';
+      orderItems = order.items || [];
     }
 
     try {
@@ -667,8 +671,11 @@ async function startServer() {
       
       if (docSnap.exists) {
         const data = docSnap.data();
-        if (data && data.status !== 'duoc_duyet' && data.status !== 'approved') {
-          return res.status(400).json({ success: false, error: 'Chỉ đơn hàng đã được phê duyệt mới có thể thanh toán.' });
+        if (data) {
+          if (data.status !== 'duoc_duyet' && data.status !== 'approved' && data.status !== 'da_thanh_toan') {
+            return res.status(400).json({ success: false, error: 'Chỉ đơn hàng đã được phê duyệt mới có thể thanh toán.' });
+          }
+          orderItems = data.items || orderItems;
         }
       }
 
@@ -676,10 +683,18 @@ async function startServer() {
         status: 'da_thanh_toan',
         serverSecret: SERVER_SECRET,
       });
+
+      // Deduct stock in Postgres DB for all items in the paid order
+      if (orderItems && orderItems.length > 0) {
+        await deductProductStock(orderItems);
+      }
     } catch (error) {
-      console.warn('[OrdersService] Firestore update error in preview mode, updated in-memory.');
+      console.warn('[OrdersService] Firestore update error in preview mode, updating in-memory order and stock.');
+      if (orderItems && orderItems.length > 0) {
+        await deductProductStock(orderItems);
+      }
     }
-    return res.json({ success: true });
+    return res.json({ success: true, message: 'Thanh toán thành công và đã trừ tồn kho!' });
   });
 
   app.post('/api/orders/:id/cancel-and-call', async (req, res) => {
@@ -720,6 +735,83 @@ async function startServer() {
       console.warn('[OrdersService] Firestore update error in preview mode, updated in-memory.');
     }
     return res.json({ success: true });
+  });
+
+  // PHARMACISTS API ENDPOINTS
+  app.get('/api/pharmacists', async (req, res) => {
+    try {
+      const pharmacists = await getPharmacists();
+      return res.json({ success: true, count: pharmacists.length, pharmacists });
+    } catch (err: any) {
+      console.error('Error fetching pharmacists:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.get('/api/pharmacists/availability', async (req, res) => {
+    try {
+      const specialty = String(req.query.specialty || '');
+      const date = String(req.query.date || 'Hôm nay');
+      const availability = await checkPharmacistsAvailability(specialty, date);
+      return res.json({ success: true, date, specialty, availability });
+    } catch (err: any) {
+      console.error('Error checking pharmacist availability:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  // APPOINTMENTS API ENDPOINTS
+  app.get('/api/appointments', async (req, res) => {
+    try {
+      const appointments = await getAllAppointments();
+      return res.json({ success: true, count: appointments.length, appointments });
+    } catch (err: any) {
+      console.error('Error fetching appointments:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.post('/api/appointments', async (req, res) => {
+    try {
+      const { patientName, patientPhone, patientEmail, pharmacistName, specialty, dateTime, timeSlot, topic, relatedOrderId, notes } = req.body;
+      if (!patientName || !patientPhone) {
+        return res.status(400).json({ success: false, error: 'Tên bệnh nhân và số điện thoại là bắt buộc.' });
+      }
+
+      const appointment = await createAppointment({
+        patientName,
+        patientPhone,
+        patientEmail: patientEmail || '',
+        pharmacistName: pharmacistName || 'DS. Trần Hoàng Phúc',
+        specialty: specialty || 'Tư vấn Dược lâm sàng',
+        dateTime: dateTime || new Date(Date.now() + 3600 * 1000 * 24).toISOString(),
+        timeSlot: timeSlot || 'Ca tư vấn trực tuyến',
+        topic: topic || 'Tư vấn sử dụng thuốc và hướng dẫn điều trị',
+        relatedOrderId: relatedOrderId || '',
+        notes: notes || '',
+      });
+
+      return res.json({ success: true, message: 'Đã đăng ký lịch hẹn tư vấn thành công!', appointment });
+    } catch (err: any) {
+      console.error('Error creating appointment:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.put('/api/appointments/:id/status', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status, notes } = req.body;
+      if (!['pending', 'scheduled', 'completed', 'cancelled', 'no_show'].includes(status)) {
+        return res.status(400).json({ success: false, error: 'Trạng thái không hợp lệ' });
+      }
+      const updated = await updateAppointmentStatus(id, status, notes);
+      if (!updated) return res.status(404).json({ success: false, error: 'Không tìm thấy lịch hẹn' });
+      return res.json({ success: true, appointment: updated });
+    } catch (err: any) {
+      console.error('Error updating appointment status:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
   });
 
   if (process.env.NODE_ENV !== 'production') {

@@ -13,6 +13,7 @@ import { auth, ensureAuthenticatedUser, signInWithGoogle, logoutUser } from '../
 import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
 import { LiveAgentClient } from '../services/liveAgentClient';
 import { formatConditionToVietnamese, formatAgeDisplay } from '../utils/formatters';
+import { AppointmentsPageCustomer } from './AppointmentsPageCustomer';
 
 export function cleanAccumulatedTranscript(text: string): string {
   let cleaned = text;
@@ -280,7 +281,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
           setProducts(data.data);
         }
       } catch (err) {
-        console.error('Error fetching sheets products:', err);
+        console.error('Error fetching pharmacy products:', err);
       }
     };
     fetchProducts();
@@ -1049,7 +1050,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
                 Danh mục Thuốc & Thực phẩm Chức năng
               </h2>
               <p className="text-[11px] text-slate-500">
-                Tìm kiếm và chọn mua các loại thuốc được đồng bộ từ Google Sheets.
+                Tìm kiếm và chọn mua các loại thuốc từ hệ thống cơ sở dữ liệu.
               </p>
               
               <div className="mt-3 relative">
@@ -1809,6 +1810,13 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
             </form>
           </div>
         )}
+
+        {/* Appointments Tab */}
+        {activeTab === 'appointments' && (
+          <div className="flex-1 overflow-hidden">
+            <AppointmentsPageCustomer />
+          </div>
+        )}
       </main>
 
       {/* Bottom Cart Bar - ONLY SHOWN ON HOME TAB */}
@@ -1834,7 +1842,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
         <nav className="bg-[#ebefec] text-[#00685c] border-t border-[#bdc9c5] shrink-0 z-30 flex justify-around items-center px-1 h-14">
           <button
             onClick={() => setActiveTab('home')}
-            className={`flex flex-col items-center justify-center px-3 py-1 rounded-md transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center px-2 py-1 rounded-md transition-all cursor-pointer ${
               activeTab === 'home'
                 ? 'bg-[#218274] text-white font-bold'
                 : 'text-[#3e4946] hover:bg-[#dfe3e1]'
@@ -1851,7 +1859,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
 
           <button
             onClick={() => setActiveTab('products')}
-            className={`flex flex-col items-center justify-center px-3 py-1 rounded-md transition-colors cursor-pointer ${
+            className={`flex flex-col items-center justify-center px-2 py-1 rounded-md transition-colors cursor-pointer ${
               activeTab === 'products'
                 ? 'bg-[#218274] text-white font-bold'
                 : 'text-[#3e4946] hover:bg-[#dfe3e1]'
@@ -1867,8 +1875,20 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveTab('appointments')}
+            className={`flex flex-col items-center justify-center px-2 py-1 rounded-md transition-colors cursor-pointer ${
+              activeTab === 'appointments'
+                ? 'bg-[#218274] text-white font-bold'
+                : 'text-[#3e4946] hover:bg-[#dfe3e1]'
+            }`}
+          >
+            <span className="material-symbols-outlined text-lg">calendar_month</span>
+            <span className="text-[10px] mt-0.5">Lịch hẹn</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('prescriptions')}
-            className={`flex flex-col items-center justify-center px-3 py-1 rounded-md transition-colors cursor-pointer ${
+            className={`flex flex-col items-center justify-center px-2 py-1 rounded-md transition-colors cursor-pointer ${
               activeTab === 'prescriptions'
                 ? 'bg-[#218274] text-white font-bold'
                 : 'text-[#3e4946] hover:bg-[#dfe3e1]'
@@ -1880,7 +1900,7 @@ export const VoiceShoppingCustomer: React.FC<VoiceShoppingCustomerProps> = ({
 
           <button
             onClick={() => setActiveTab('profile')}
-            className={`flex flex-col items-center justify-center px-3 py-1 rounded-md transition-colors cursor-pointer ${
+            className={`flex flex-col items-center justify-center px-2 py-1 rounded-md transition-colors cursor-pointer ${
               activeTab === 'profile'
                 ? 'bg-[#218274] text-white font-bold'
                 : 'text-[#3e4946] hover:bg-[#dfe3e1]'

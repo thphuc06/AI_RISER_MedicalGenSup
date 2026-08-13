@@ -3,7 +3,7 @@ import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 
 export const FIREBASE_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || 'project-c55c421d-248e-4800-bfb';
-export const FIRESTORE_DATABASE_ID = process.env.FIRESTORE_DATABASE_ID || 'ai-studio-vietmedcareaipha-de4deeac-0189-48f6-8f0e-4affb477dc90';
+export const FIRESTORE_DATABASE_ID = process.env.FIRESTORE_DATABASE_ID || 'ai-studio-vietmedcarealpha-de4deeac-0189-48f6-8f0e-4affb477dc90';
 
 // Detect if we are running in a test suite context to provide a hermetic in-memory fallback
 const isTest = typeof process !== 'undefined' && (

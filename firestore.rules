@@ -37,5 +37,15 @@ service cloud.firestore {
       allow create, update: if hasServerSecret(request.resource.data);
       allow delete: if hasServerSecret(resource.data);
     }
+    match /pharmacists/{pharmacistId} {
+      allow get, list: if signedIn() || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC') || resource == null;
+      allow create, update: if (signedIn() && pharmacistId == request.auth.uid) || hasServerSecret(request.resource.data);
+      allow delete: if hasServerSecret(resource.data);
+    }
+    match /appointments/{appointmentId} {
+      allow get, list: if (signedIn() && (resource.data.patientId == request.auth.uid || resource.data.pharmacistId == request.auth.uid || isPharmacist())) || (resource != null && resource.data.serverSecret == 'SECURE_SERVER_SECRET_180406_PHUC') || resource == null;
+      allow create, update: if (signedIn() && (request.resource.data.patientId == request.auth.uid || isPharmacist())) || hasServerSecret(request.resource.data);
+      allow delete: if isPharmacist() || hasServerSecret(resource.data);
+    }
   }
 }

@@ -6,6 +6,7 @@ import { computeOrderTriageScore } from '../src/utils/triageCalculator.js';
 import { db } from '../src/db/index.js';
 import { products } from '../src/db/schema.js';
 import { eq, sql } from 'drizzle-orm';
+import { deductProductStock } from './stockService.js';
 
 export type CartOperation =
   | { type: 'add'; sku: string; quantity: number; source?: string }
@@ -257,18 +258,7 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
       transaction.set(cartRef, { items: [] }, { merge: true });
 
       // Decrement stock in PostgreSQL (Cloud SQL) for all items in the order
-      for (const item of items) {
-        try {
-          await db.update(products)
-            .set({
-              ton_kho: sql`GREATEST(0, ${products.ton_kho} - ${item.quantity})`
-            })
-            .where(eq(products.sku, item.id));
-          console.log(`[Postgres] Decremented SKU ${item.id} quantity by ${item.quantity}`);
-        } catch (dbErr) {
-          console.error(`[Postgres] Error updating stock for SKU ${item.id}:`, dbErr);
-        }
-      }
+      await deductProductStock(items);
 
       return { success: true, orderId: orderRef.id, ...safety };
     });
@@ -285,18 +275,7 @@ export async function checkoutCart(userId: string, customer: Record<string, stri
       const orderId = `preview_order_${Date.now()}`;
 
       // Decrement stock in PostgreSQL (Cloud SQL) even in fallback mode
-      for (const item of items) {
-        try {
-          await db.update(products)
-            .set({
-              ton_kho: sql`GREATEST(0, ${products.ton_kho} - ${item.quantity})`
-            })
-            .where(eq(products.sku, item.id));
-          console.log(`[Postgres-Fallback] Decremented SKU ${item.id} quantity by ${item.quantity}`);
-        } catch (dbErr) {
-          console.error(`[Postgres-Fallback] Error updating stock for SKU ${item.id}:`, dbErr);
-        }
-      }
+      await deductProductStock(items);
 
       previewCarts.set(userId, { items: [], confirmedTranscript: '' });
       return { success: true, orderId, ...safety };

@@ -7,6 +7,7 @@ import { mutateCart, readCart, readHealthProfile, saveConfirmedTranscript, saveH
 import { getContraindicationsForQuery, getMaxDoseForQuery, mapToAgeGroup } from './safetyService.js';
 import { getCacheStatus, getProducts, getSafetyData, getValidAgeGroups, getValidConditions } from './sheetsService.js';
 import { searchProductsSemantic, searchContraindicationsSemantic } from './semanticSearch.js';
+import { createAppointment, findAvailablePharmacist, checkPharmacistsAvailability, getPharmacists } from './appointmentService.js';
 
 interface ClientMessage { type: 'authenticate' | 'audio_start' | 'audio_input' | 'audio_end' | 'confirm_transcript'; idToken?: string; audio?: string; text?: string }
 
@@ -58,6 +59,26 @@ const tools: FunctionDeclaration[] = [
   declaration('add_to_cart', 'Thêm OTC qua cổng an toàn phía server.', { sku: stringProperty('SKU chính xác'), so_luong: numberProperty('Số lượng'), ly_do_va_bang_chung: stringProperty('Lý do và bằng chứng bắt buộc') }, ['sku', 'so_luong', 'ly_do_va_bang_chung']),
   declaration('remove_from_cart', 'Xóa SKU qua cổng an toàn phía server.', { sku: stringProperty('SKU chính xác') }, ['sku']),
   declaration('escalate_to_pharmacist', 'Chuyển cho dược sĩ.', { ly_do: stringProperty('Lý do') }, ['ly_do']),
+  declaration(
+    'check_pharmacists_availability',
+    'Kiểm tra danh sách dược sĩ và các khung giờ rảnh (lịch trống) của họ dựa trên chuyên khoa và ngày yêu cầu.',
+    {
+      chuyen_khoa: stringProperty('Chuyên khoa tư vấn: "Tim mạch & Huyết áp", "Nhi khoa & Mẹ bé", "Thuốc kê đơn Rx", "Nội tổng quát"'),
+      ngay: stringProperty('Ngày cần kiểm tra (ví dụ: "Hôm nay", "Ngày mai", hoặc định dạng "YYYY-MM-DD")')
+    },
+    ['chuyen_khoa', 'ngay']
+  ),
+  declaration(
+    'schedule_consultation',
+    'Tự động đặt lịch tư vấn trực tuyến qua Google Meet với Dược sĩ/Bác sĩ chuyên khoa khi bệnh nhân yêu cầu hoặc đơn thuộc Tier 1 nguy cơ cao.',
+    {
+      chuyen_khoa: stringProperty('Chuyên khoa tư vấn: "Tim mạch & Huyết áp", "Nhi khoa & Mẹ bé", "Thuốc kê đơn Rx", "Nội tổng quát"'),
+      ngay_gio: stringProperty('Ngày giờ đề xuất (ví dụ: "09:30 sáng mai", "14:00 hôm nay", "09:00 - 09:30, Hôm nay")'),
+      ghi_chu_tu_van: stringProperty('Ghi chú lý do tư vấn hoặc cảnh báo nguy cơ từ đơn thuốc'),
+      pharmacist_id: stringProperty('Mã ID dược sĩ đã chọn từ danh sách check_pharmacists_availability (tùy chọn)')
+    },
+    ['chuyen_khoa', 'ngay_gio', 'ghi_chu_tu_van']
+  ),
 ];
 
 function isProfileField(field: string): boolean {
@@ -155,7 +176,15 @@ ${initialProfileSummary}
 - get_contraindications: Tra cứu chống chỉ định của hoạt chất đối với các bệnh nền/thai kỳ/đối tượng đặc biệt từ cơ sở dữ liệu.
 - get_max_dose: Tra cứu giới hạn liều dùng tối đa mg/ngày theo hoạt chất và độ tuổi hoặc nhóm tuổi.
 - update_health_profile: Cập nhật thông tin hồ sơ sức khỏe.
-- Chỉ gọi add_to_cart, remove_from_cart hay update_health_profile sau khi người dùng đồng ý/yêu cầu trong cuộc trò chuyện.`;
+- Chỉ gọi add_to_cart, remove_from_cart hay update_health_profile sau khi người dùng đồng ý/yêu cầu trong cuộc trò chuyện.
+
+==================================================
+5. QUY TRÌNH ĐẶT LỊCH HẸN VỚI DƯỢC SĨ BAN TRỰC (QUAN TRỌNG):
+Khi người dùng yêu cầu đặt lịch hẹn, gặp dược sĩ tư vấn hoặc khi đơn thuốc thuộc loại Tier 1 cần tư vấn khẩn cấp:
+(1) Hãy lịch sự hỏi người dùng về thời gian rảnh mong muốn của họ (ví dụ: "Hôm nay", "Ngày mai").
+(2) Gọi công cụ 'check_pharmacists_availability' với chuyên khoa và ngày rảnh đó để tra cứu danh sách dược sĩ và các lịch trống của họ.
+(3) Đọc danh sách các dược sĩ rảnh kèm theo tối đa 2-3 khung giờ trống tiêu biểu cho người dùng lựa chọn (VD: "DS. Trần Hoàng Phúc đang trống lịch lúc 9:00 và 10:30 sáng mai, hoặc DS. Nguyễn Thị Linh trống lịch lúc 14:00"). Hãy đọc thật ngắn gọn, tự nhiên.
+(4) Khi bệnh nhân xác nhận lựa chọn của mình, hãy gọi công cụ 'schedule_consultation' với chuyên khoa, ngày giờ chính xác và 'pharmacist_id' của dược sĩ đã được chọn để chính thức chốt lịch hẹn cho họ.`;
 
   let isLiveSessionOpen = true;
 
@@ -384,6 +413,66 @@ ${initialProfileSummary}
           } else if (name === 'escalate_to_pharmacist') {
             result = { success: true };
             safeSend({ type: 'escalate', reason: String(args.ly_do || '') });
+          } else if (name === 'check_pharmacists_availability') {
+            const chuyen_khoa = String(args.chuyen_khoa || 'Tư vấn Dược lâm sàng');
+            const ngay = String(args.ngay || 'Hôm nay');
+            try {
+              const availability = await checkPharmacistsAvailability(chuyen_khoa, ngay);
+              result = {
+                success: true,
+                specialty: chuyen_khoa,
+                date: ngay,
+                pharmacists: availability.map(p => ({
+                  pharmacist_id: p.pharmacistId,
+                  full_name: p.fullName,
+                  specialties: p.specialties,
+                  is_online: p.isOnline,
+                  available_slots: p.availableSlots.slice(0, 8)
+                }))
+              };
+            } catch (err: any) {
+              result = { success: false, message: `Lỗi kiểm tra lịch trống: ${err.message || String(err)}` };
+            }
+          } else if (name === 'schedule_consultation') {
+            const chuyen_khoa = String(args.chuyen_khoa || 'Tư vấn Dược lâm sàng');
+            const ngay_gio = String(args.ngay_gio || '09:30 sáng mai');
+            const ghi_chu_tu_van = String(args.ghi_chu_tu_van || 'Tư vấn sử dụng thuốc và kiểm tra nguy cơ');
+            const selectedPharmacistId = args.pharmacist_id ? String(args.pharmacist_id) : '';
+
+            const profileRes = await readHealthProfile(userId);
+            const profile = profileRes.profile || {};
+            const patientName = String(profile.ho_ten || 'Bệnh nhân');
+
+            let assignedPharmacist;
+            if (selectedPharmacistId) {
+              const pharmacists = await getPharmacists();
+              assignedPharmacist = pharmacists.find(p => p.id === selectedPharmacistId);
+            }
+
+            if (!assignedPharmacist) {
+              assignedPharmacist = await findAvailablePharmacist(chuyen_khoa);
+            }
+
+            const appointment = await createAppointment({
+              patientId: userId,
+              patientName,
+              patientPhone: '0901234567',
+              pharmacistId: assignedPharmacist.id,
+              pharmacistName: assignedPharmacist.fullName,
+              pharmacistEmail: assignedPharmacist.email,
+              specialty: chuyen_khoa,
+              dateTime: new Date(Date.now() + 3600 * 1000 * 24).toISOString(),
+              timeSlot: ngay_gio,
+              topic: ghi_chu_tu_van,
+              notes: `Đặt lịch tự động bởi trợ lý giọng nói Gemini Live cho bệnh nhân ${patientName}.`,
+            });
+
+            safeSend({ type: 'appointment_created', appointment });
+            result = {
+              success: true,
+              message: `Đã đặt thành công lịch hẹn tư vấn trực tuyến với ${appointment.pharmacistName} (${appointment.specialty}) vào lúc ${ngay_gio}. Đường link họp Google Meet: ${appointment.meetUrl}`,
+              meetUrl: appointment.meetUrl,
+            };
           }
           responses.push({ name, id: call.id, response: { result } });
         }
